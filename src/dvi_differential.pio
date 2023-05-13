@@ -1,0 +1,11 @@
+.program dvi_differential
+.side_set 2
+.origin 0
+
+; In order to achieve one bit per clock, the bit from the shift register is used
+; to jump to the instruction to side-set the right differential signal.
+
+.wrap_target
+    out pc, 1   side 0b10
+    out pc, 1   side 0b01
+.wrap

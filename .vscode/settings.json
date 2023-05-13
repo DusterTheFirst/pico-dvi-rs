@@ -1,0 +1,5 @@
+{
+    "rust-analyzer.cargo.target": "thumbv6m-none-eabi",
+    "rust-analyzer.check.allTargets": false,
+    "cSpell.words": ["rosc", "sysinfo", "xosc"]
+}
