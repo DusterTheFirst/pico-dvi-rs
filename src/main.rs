@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+use core::arch::global_asm;
+
 use defmt_rtt as _;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
@@ -21,6 +23,43 @@ mod clock;
 mod dvi;
 mod framebuffer;
 mod link;
+
+global_asm! {
+    "
+    .section .text
+    .align 4
+    data_cpy_table:
+     .word _scratch_x_source
+     .word _scratch_x_start
+     .word _scratch_x_end
+     .word _scratch_y_source
+     .word _scratch_y_start
+     .word _scratch_y_end
+     .word 0
+    .global __pre_init
+    .type __pre_init,%function
+    .thumb_func
+    __pre_init:
+     push {{r4, lr}}
+     ldr r4, =data_cpy_table
+
+    1:
+     ldmia r4!, {{r1-r3}}
+     cmp r1, #0
+     beq 2f
+     bl data_cpy
+     b 1b
+    2:
+     pop {{r4, pc}}
+     data_cpy_loop:
+     ldm r1!, {{r0}}
+     stm r2!, {{r0}}
+     data_cpy:
+     cmp r2, r3
+     blo data_cpy_loop
+     bx lr
+    "
+}
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
 #[rp_pico::entry]
@@ -139,13 +178,13 @@ fn ram() {
 }
 
 // This function will be placed in ram
-#[link_section = link!(ram small 0, ram_x)]
+#[link_section = link!(scratch x, ram_x)]
 fn ram_x() {
     dbg!(ram_x as fn() as *const ());
 }
 
 // This function will be placed in ram
-#[link_section = link!(ram small 1, ram_y)]
+#[link_section = link!(scratch y, ram_y)]
 fn ram_y() {
     dbg!(ram_y as fn() as *const ());
 }

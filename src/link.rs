@@ -3,9 +3,9 @@ macro_rules! link {
     (ram, $fn_name:ident) => {
         concat!(".ram.", file!(), ".", line!(), ".", stringify!($fn_name))
     };
-    (ram small 0, $fn_name:ident) => {
+    (scratch x, $fn_name:ident) => {
         concat!(
-            ".small.0.",
+            ".scratch_x.",
             file!(),
             ".",
             line!(),
@@ -13,9 +13,9 @@ macro_rules! link {
             stringify!($fn_name)
         )
     };
-    (ram small 1, $fn_name:ident) => {
+    (scratch y, $fn_name:ident) => {
         concat!(
-            ".small.1.",
+            ".scratch_y.",
             file!(),
             ".",
             line!(),
