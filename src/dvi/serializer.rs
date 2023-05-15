@@ -6,7 +6,7 @@ use rp_pico::{
             OutputSlewRate, Pin, PinId, PinMode, PullDown, ValidPinMode,
         },
         pio::{
-            self, InstalledProgram, PIOBuilder, StateMachine, StateMachineGroup3,
+            self, InstalledProgram, PIOBuilder, Running, StateMachine, StateMachineGroup3,
             StateMachineIndex, Stopped, Tx, UninitStateMachine,
         },
         pwm::{self, FreeRunning, Slice, ValidPwmOutputPin},
@@ -72,12 +72,18 @@ pub struct DviSerializer<
     data_pins: DviDataPins<RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>, // FIXME:
     clock_pins: DviClockPins<SliceId, Pos, Neg, FunctionPwm>,
 
-    state_machines: StateMachineGroup3<PIO, pio::SM0, pio::SM1, pio::SM2, Stopped>,
+    state_machines: StateMachineState<PIO>,
     tx_fifo: (
         Tx<(PIO, pio::SM0)>,
         Tx<(PIO, pio::SM1)>,
         Tx<(PIO, pio::SM2)>,
     ),
+}
+
+enum StateMachineState<PIO: pio::PIOExt> {
+    Stopped(StateMachineGroup3<PIO, pio::SM0, pio::SM1, pio::SM2, Stopped>),
+    Running(StateMachineGroup3<PIO, pio::SM0, pio::SM1, pio::SM2, Running>),
+    Taken,
 }
 
 impl<PIO, SliceId, ClockPos, ClockNeg, RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>
@@ -224,19 +230,34 @@ where
                 clock_neg,
                 pwm_slice: clock_pins.pwm_slice,
             },
-            state_machines: state_machine_red
-                .with(state_machine_green)
-                .with(state_machine_blue),
+            state_machines: StateMachineState::Stopped(
+                state_machine_red
+                    .with(state_machine_green)
+                    .with(state_machine_blue),
+            ),
             tx_fifo: (tx_red, tx_green, tx_blue),
         }
     }
 
-    pub fn enable(mut self) {
-        let state_machines = self.state_machines.sync().start();
-        self.clock_pins.pwm_slice.enable();
+    pub fn tx0(&self) -> &Tx<(PIO, pio::SM0)> {
+        &self.tx_fifo.0
+    }
 
-        // TODO: TMDS LANES
-        // TODO: DMA
-        // TODO: DVI typestate?
+    pub fn tx1(&self) -> &Tx<(PIO, pio::SM1)> {
+        &self.tx_fifo.1
+    }
+
+    pub fn tx2(&self) -> &Tx<(PIO, pio::SM2)> {
+        &self.tx_fifo.2
+    }
+
+    pub fn enable(&mut self) {
+        if let StateMachineState::Stopped(state_machines) =
+            core::mem::replace(&mut self.state_machines, StateMachineState::Taken)
+        {
+            let state_machines = state_machines.sync().start();
+            self.state_machines = StateMachineState::Running(state_machines);
+        }
+        self.clock_pins.pwm_slice.enable();
     }
 }

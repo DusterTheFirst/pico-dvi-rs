@@ -1,8 +1,9 @@
 #![no_std]
 #![no_main]
 
-use core::arch::global_asm;
+use core::{arch::global_asm, cell::RefCell};
 
+use critical_section::Mutex;
 use defmt_rtt as _;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
@@ -16,7 +17,12 @@ use rp_pico::{
 
 use crate::{
     clock::init_clocks,
-    dvi::serializer::{DviClockPins, DviDataPins, DviSerializer},
+    dvi::{
+        dma::DmaChannels,
+        serializer::{DviClockPins, DviDataPins, DviSerializer},
+        timing::VGA_TIMING,
+        Dvi,
+    },
 };
 
 mod clock;
@@ -60,6 +66,9 @@ global_asm! {
      bx lr
     "
 }
+
+// TODO: iterate on this
+static DVI_INST: Mutex<RefCell<Option<()>>> = Mutex::new(RefCell::new(None));
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
 #[rp_pico::entry]
@@ -106,7 +115,7 @@ fn entry() -> ! {
     let pwm_slices = pwm::Slices::new(peripherals.PWM, &mut peripherals.RESETS);
     let dma = peripherals.DMA.split(&mut peripherals.RESETS);
 
-    let dvi = DviSerializer::new(
+    let serializer = DviSerializer::new(
         peripherals.PIO0,
         &mut peripherals.RESETS,
         DviDataPins {
@@ -124,7 +133,21 @@ fn entry() -> ! {
         },
     );
 
-    // dvi.enable();
+    let dma_channels = DmaChannels::new(
+        dma.ch0,
+        dma.ch1,
+        dma.ch2,
+        dma.ch3,
+        dma.ch4,
+        dma.ch5,
+        serializer.tx0(),
+        serializer.tx1(),
+        serializer.tx2(),
+    );
+
+    let mut dvi = Dvi::new(VGA_TIMING, serializer, dma_channels);
+
+    dvi.start();
 
     rom();
     ram();
