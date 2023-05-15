@@ -145,7 +145,7 @@ where
         neg_pin.set_output_override(output_override);
 
         pos_pin.set_drive_strength(OutputDriveStrength::TwoMilliAmps);
-        neg_pin.set_slew_rate(OutputSlewRate::Slow);
+        pos_pin.set_slew_rate(OutputSlewRate::Slow);
         pos_pin.set_output_override(output_override);
 
         (state_machine, tx)
