@@ -17,7 +17,7 @@ where
 {
     chan_ctrl: Ch0,
     chan_data: Ch1,
-    tx_fifo: *const u32,
+    tx_fifo: u32,
     dreq: u8,
 }
 
@@ -67,8 +67,7 @@ where
         DviLaneDmaCfg {
             chan_ctrl: ch0,
             chan_data: ch1,
-            // TODO: either construct these properly or set up values later.
-            tx_fifo: tx.fifo_address(),
+            tx_fifo: tx.fifo_address() as u32,
             dreq: tx.dreq_value(),
         }
     }
@@ -122,8 +121,19 @@ where
         self.lane2.load_op(dma_list.lane(2));
     }
 
-    pub fn enable_interrupt(&mut self) {
+    /// Enable interrupts and start the DMA transfers
+    pub fn start(&mut self) {
         self.lane0.chan_data.listen_irq0();
+        let mut mask = 0;
+        mask |= 1 << self.lane0.chan_ctrl.id();
+        mask |= 1 << self.lane1.chan_ctrl.id();
+        mask |= 1 << self.lane2.chan_ctrl.id();
+        // TODO: bludgeon rp2040-hal, or whichever crate it is that's supposed to
+        // be in charge of such things, into doing this the "right" way.
+        unsafe {
+            let multi_chan_trigger: *mut u32 = 0x50000430 as *mut _;
+            multi_chan_trigger.write_volatile(mask);
+        }
     }
 }
 

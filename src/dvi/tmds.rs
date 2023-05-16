@@ -64,10 +64,6 @@ impl TmdsPair {
         Self::new(sym, sym)
     }
 
-    pub const fn bits(self) -> u32 {
-        self.0
-    }
-
     /// Encode two copies of a byte, approximating to achieve DC balance.
     pub const fn encode_balanced_approx(byte: u32) -> Self {
         let (discrepancy, sym0) = TmdsSym::encode(0, byte);

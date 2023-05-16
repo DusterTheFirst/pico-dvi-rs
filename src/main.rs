@@ -11,7 +11,14 @@ use cortex_m::delay::Delay;
 use defmt::{dbg, info};
 use embedded_hal::digital::v2::OutputPin;
 use rp_pico::{
-    hal::{dma::DMAExt, gpio::PinState, pwm, sio::Sio, watchdog::Watchdog, Clock},
+    hal::{
+        dma::{Channel, DMAExt, CH0, CH1, CH2, CH3, CH4, CH5},
+        gpio::PinState,
+        pwm,
+        sio::Sio,
+        watchdog::Watchdog,
+        Clock,
+    },
     pac, Pins,
 };
 
@@ -21,13 +28,13 @@ use crate::{
         dma::DmaChannels,
         serializer::{DviClockPins, DviDataPins, DviSerializer},
         timing::VGA_TIMING,
-        Dvi,
+        DviInst,
     },
 };
 
 mod clock;
 mod dvi;
-mod framebuffer;
+//mod framebuffer;
 mod link;
 
 global_asm! {
@@ -68,7 +75,20 @@ global_asm! {
 }
 
 // TODO: iterate on this
-static DVI_INST: Mutex<RefCell<Option<()>>> = Mutex::new(RefCell::new(None));
+static DVI_INST: Mutex<
+    RefCell<
+        Option<
+            DviInst<
+                Channel<CH0>,
+                Channel<CH1>,
+                Channel<CH2>,
+                Channel<CH3>,
+                Channel<CH4>,
+                Channel<CH5>,
+            >,
+        >,
+    >,
+> = Mutex::new(RefCell::new(None));
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
 #[rp_pico::entry]
@@ -87,6 +107,8 @@ fn entry() -> ! {
     let mut watchdog = Watchdog::new(peripherals.WATCHDOG);
     let single_cycle_io = Sio::new(peripherals.SIO);
 
+    let timing = VGA_TIMING;
+
     // External high-speed crystal on the pico board is 12Mhz
     let clocks = init_clocks(
         peripherals.XOSC,
@@ -96,6 +118,7 @@ fn entry() -> ! {
         peripherals.PLL_USB,
         &mut peripherals.RESETS,
         &mut watchdog,
+        timing.bit_clk_khz,
     );
 
     let pins = Pins::new(
@@ -115,7 +138,7 @@ fn entry() -> ! {
     let pwm_slices = pwm::Slices::new(peripherals.PWM, &mut peripherals.RESETS);
     let dma = peripherals.DMA.split(&mut peripherals.RESETS);
 
-    let serializer = DviSerializer::new(
+    let mut serializer = DviSerializer::new(
         peripherals.PIO0,
         &mut peripherals.RESETS,
         DviDataPins {
@@ -145,17 +168,22 @@ fn entry() -> ! {
         serializer.tx2(),
     );
 
-    let mut dvi = Dvi::new(VGA_TIMING, serializer, dma_channels);
+    let mut inst = DviInst::new(timing, dma_channels);
 
-    dvi.start();
+    critical_section::with(|cs| {
+        inst.setup_dma();
+        inst.start();
+        serializer.enable();
+        DVI_INST.borrow(cs).replace(Some(inst));
+    });
 
     rom();
     ram();
     ram_x();
     ram_y();
 
-    unsafe { dbg!(&framebuffer::FRAMEBUFFER_16BPP as *const _) };
-    unsafe { dbg!(&framebuffer::FRAMEBUFFER_8BPP as *const _) };
+    //unsafe { dbg!(&framebuffer::FRAMEBUFFER_16BPP as *const _) };
+    //unsafe { dbg!(&framebuffer::FRAMEBUFFER_8BPP as *const _) };
 
     loop {
         info!("high");

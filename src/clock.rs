@@ -3,7 +3,9 @@ use rp_pico::{
     hal::{
         clocks::{ClockSource, ClocksManager},
         pll::{
-            self, common_configs::PLL_USB_48MHZ, setup_pll_blocking, PLLConfig, PhaseLockedLoop,
+            self,
+            common_configs::{PLL_SYS_125MHZ, PLL_USB_48MHZ},
+            setup_pll_blocking, PLLConfig, PhaseLockedLoop,
         },
         rosc::RingOscillator,
         xosc::{self, setup_xosc_blocking, CrystalOscillator},
@@ -11,6 +13,42 @@ use rp_pico::{
     },
     pac, XOSC_CRYSTAL_FREQ,
 };
+
+struct ClockCfg {
+    vco: u32,
+    postdiv1: u32,
+    postdiv2: u32,
+}
+
+// Values taken from pico-sdk hardware_pll/include/hardware/pll.h
+const PICO_PLL_VCO_MIN_FREQ_MHZ: u32 = 750;
+const PICO_PLL_VCO_MAX_FREQ_MHZ: u32 = 1600;
+
+/// Determine PLL parameters for target frequency
+///
+/// Logic is adapted from check_sys_clock_khz in pico-sdk
+fn check_sys_clock_khz(freq_khz: u32) -> Option<ClockCfg> {
+    let crystal_freq_mhz = XOSC_CRYSTAL_FREQ / 1_000_000;
+    for fbdiv in (16..=320).rev() {
+        let vco = fbdiv * crystal_freq_mhz;
+        if vco < PICO_PLL_VCO_MIN_FREQ_MHZ * 1000 || vco > PICO_PLL_VCO_MAX_FREQ_MHZ * 1000 {
+            continue;
+        }
+        for postdiv1 in (1..=7).rev() {
+            for postdiv2 in (1..=postdiv1).rev() {
+                let out = vco / (postdiv1 * postdiv2);
+                if out == freq_khz && vco % (postdiv1 * postdiv2) == 0 {
+                    return Some(ClockCfg {
+                        vco,
+                        postdiv1,
+                        postdiv2,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
 
 /// Since we need to overclock the pico, we need to set these clocks up ourselves
 pub fn init_clocks(
@@ -21,6 +59,7 @@ pub fn init_clocks(
     pll_usb: pac::PLL_USB,
     resets: &mut pac::RESETS,
     watchdog: &mut Watchdog,
+    freq_khz: u32,
 ) -> ClocksManager {
     // Enable the xosc
     let xosc = setup_xosc_blocking(xosc, XOSC_CRYSTAL_FREQ.Hz())
@@ -33,6 +72,21 @@ pub fn init_clocks(
 
     let mut clocks = ClocksManager::new(clocks);
 
+    let clk_cfg = check_sys_clock_khz(freq_khz);
+    let pll_config = match clk_cfg {
+        Some(ClockCfg {
+            vco,
+            postdiv1,
+            postdiv2,
+        }) => PLLConfig {
+            vco_freq: vco.MHz(),
+            refdiv: 1,
+            post_div1: postdiv1 as u8,
+            post_div2: postdiv2 as u8,
+        },
+        None => PLL_SYS_125MHZ,
+    };
+
     // INFO: Overclock to 10 * 25.175 MHz ~= 252 MHz for mandatory minimum DVI output resolution: VGA (640x480) @ 60 Hz
     // Section following comes from https://docs.rs/rp2040-hal/latest/rp2040_hal/clocks/index.html#usage-extended
 
@@ -43,13 +97,7 @@ pub fn init_clocks(
     let pll_sys = setup_pll_blocking(
         pll_sys,
         xosc.operating_frequency(),
-        // Gotten from vcocalc.py
-        PLLConfig {
-            vco_freq: 1512.MHz(),
-            refdiv: 1,
-            post_div1: 6,
-            post_div2: 1,
-        },
+        pll_config,
         &mut clocks,
         resets,
     )

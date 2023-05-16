@@ -40,7 +40,7 @@ pub struct DviTiming {
     v_back_porch: u32,
     v_active_lines: u32,
 
-    bit_clk_khz: u32,
+    pub bit_clk_khz: u32,
 }
 
 pub const VGA_TIMING: DviTiming = DviTiming {
@@ -60,9 +60,9 @@ pub const VGA_TIMING: DviTiming = DviTiming {
 };
 
 #[derive(Default)]
-struct DviTimingState {
+pub struct DviTimingState {
     v_ctr: u32,
-    state: DviTimingLineState,
+    v_state: DviTimingLineState,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -103,12 +103,16 @@ impl DviTimingLineState {
 }
 
 impl DviTimingState {
-    fn advance(&mut self, timing: &DviTiming) {
+    pub fn advance(&mut self, timing: &DviTiming) {
         self.v_ctr += 1;
-        if self.v_ctr == timing.n_lines_for_state(self.state) {
-            self.state = self.state.next();
+        if self.v_ctr == timing.n_lines_for_state(self.v_state) {
+            self.v_state = self.v_state.next();
             self.v_ctr = 0;
         }
+    }
+
+    pub fn v_state(&self) -> DviTimingLineState {
+        self.v_state
     }
 }
 

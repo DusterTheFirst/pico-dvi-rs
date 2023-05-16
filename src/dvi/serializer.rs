@@ -204,23 +204,20 @@ where
         // 9 CLK -
         let clock_pwm = &mut clock_pins.pwm_slice;
         clock_pwm.default_config();
-        clock_pwm.disable();
         clock_pwm.set_top(9);
 
         clock_pwm.channel_a.clr_inverted();
         clock_pwm.channel_a.set_duty(5);
         let mut clock_pos = clock_pwm.channel_a.output_to(clock_pins.clock_pos);
-        clock_pos.set_drive_strength(OutputDriveStrength::TwelveMilliAmps);
-        clock_pos.set_slew_rate(OutputSlewRate::Fast);
+        clock_pos.set_drive_strength(OutputDriveStrength::TwoMilliAmps);
+        clock_pos.set_slew_rate(OutputSlewRate::Slow);
 
         clock_pwm.channel_b.set_inverted();
         clock_pwm.channel_b.set_duty(5);
         let mut clock_neg = clock_pwm.channel_b.output_to(clock_pins.clock_neg);
-        clock_neg.set_drive_strength(OutputDriveStrength::TwelveMilliAmps);
-        clock_neg.set_slew_rate(OutputSlewRate::Fast);
-
-        // TODO: DMA
-        // TODO: TMDS ENCODING
+        clock_neg.set_drive_strength(OutputDriveStrength::TwoMilliAmps);
+        clock_neg.set_slew_rate(OutputSlewRate::Slow);
+        clock_pwm.enable();
 
         Self {
             pio,

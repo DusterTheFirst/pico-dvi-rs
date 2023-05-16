@@ -4,49 +4,22 @@ pub mod serializer;
 pub mod timing;
 pub mod tmds;
 
-use rp_pico::hal::{
-    dma::SingleChannel,
-    gpio::{bank0, PinId},
-    pio,
-    pwm::{self, ValidPwmOutputPin},
-};
+use rp_pico::hal::dma::SingleChannel;
 
-use crate::pac::interrupt;
+use crate::{pac::interrupt, DVI_INST};
 
 use self::{
     dma::DmaChannels,
-    serializer::DviSerializer,
-    timing::{DviScanlineDmaList, DviTiming, DviTimingLineState},
+    timing::{DviScanlineDmaList, DviTiming, DviTimingLineState, DviTimingState},
 };
 
-pub struct Dvi<
-    PIO,
-    SliceId,
-    Pos,
-    Neg,
-    RedPos,
-    RedNeg,
-    GreenPos,
-    GreenNeg,
-    BluePos,
-    BlueNeg,
-    Ch0,
-    Ch1,
-    Ch2,
-    Ch3,
-    Ch4,
-    Ch5,
-> where
-    PIO: pio::PIOExt,
-    SliceId: pwm::SliceId,
-    Pos: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::A>,
-    Neg: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::B>,
-    RedPos: PinId,
-    RedNeg: PinId,
-    GreenPos: PinId,
-    GreenNeg: PinId,
-    BluePos: PinId,
-    BlueNeg: PinId,
+/// Dynamic state for DVI output.
+///
+/// This struct corresponds reasonably closely to `struct dvi_inst` in the
+/// PicoDVI source, but with the focused role of holding state needing to
+/// be accessed by the interrupt handler.
+pub struct DviInst<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>
+where
     Ch0: SingleChannel,
     Ch1: SingleChannel,
     Ch2: SingleChannel,
@@ -55,9 +28,8 @@ pub struct Dvi<
     Ch5: SingleChannel,
 {
     timing: DviTiming,
-    serializer:
-        DviSerializer<PIO, SliceId, Pos, Neg, RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>,
-    dma_channels: DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>,
+    timing_state: DviTimingState,
+    channels: DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>,
 
     dma_list_vblank_sync: DviScanlineDmaList,
     dma_list_vblank_nosync: DviScanlineDmaList,
@@ -65,53 +37,8 @@ pub struct Dvi<
     dma_list_error: DviScanlineDmaList,
 }
 
-impl<
-        PIO,
-        SliceId,
-        Pos,
-        Neg,
-        RedPos,
-        RedNeg,
-        GreenPos,
-        GreenNeg,
-        BluePos,
-        BlueNeg,
-        Ch0,
-        Ch1,
-        Ch2,
-        Ch3,
-        Ch4,
-        Ch5,
-    >
-    Dvi<
-        PIO,
-        SliceId,
-        Pos,
-        Neg,
-        RedPos,
-        RedNeg,
-        GreenPos,
-        GreenNeg,
-        BluePos,
-        BlueNeg,
-        Ch0,
-        Ch1,
-        Ch2,
-        Ch3,
-        Ch4,
-        Ch5,
-    >
+impl<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5> DviInst<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>
 where
-    PIO: pio::PIOExt,
-    SliceId: pwm::SliceId,
-    Pos: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::A>,
-    Neg: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::B>,
-    RedPos: PinId,
-    RedNeg: PinId,
-    GreenPos: PinId,
-    GreenNeg: PinId,
-    BluePos: PinId,
-    BlueNeg: PinId,
     Ch0: SingleChannel,
     Ch1: SingleChannel,
     Ch2: SingleChannel,
@@ -119,56 +46,56 @@ where
     Ch4: SingleChannel,
     Ch5: SingleChannel,
 {
-    pub fn new(
-        timing: DviTiming,
-        serializer: DviSerializer<
-            PIO,
-            SliceId,
-            Pos,
-            Neg,
-            RedPos,
-            RedNeg,
-            GreenPos,
-            GreenNeg,
-            BluePos,
-            BlueNeg,
-        >,
-        dma_channels: DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>,
-    ) -> Self {
-        let mut dvi = Dvi {
+    pub fn new(timing: DviTiming, channels: DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>) -> Self {
+        DviInst {
             timing,
-            serializer,
+            timing_state: Default::default(),
+            channels,
             dma_list_vblank_sync: Default::default(),
             dma_list_vblank_nosync: Default::default(),
+            // TODO: active
             dma_list_error: Default::default(),
-            dma_channels,
-        };
-
-        dvi.dma_list_vblank_sync.setup_scanline(
-            &dvi.timing,
-            &dvi.dma_channels,
-            DviTimingLineState::Sync,
-        );
-        dvi.dma_list_vblank_nosync.setup_scanline(
-            &dvi.timing,
-            &dvi.dma_channels,
-            DviTimingLineState::FrontPorch,
-        );
-        dvi.dma_list_error.setup_scanline(
-            &dvi.timing,
-            &dvi.dma_channels,
-            DviTimingLineState::Active,
-        );
-        dvi
+        }
     }
 
+    pub fn setup_dma(&mut self) {
+        self.dma_list_vblank_sync.setup_scanline(
+            &self.timing,
+            &self.channels,
+            DviTimingLineState::Sync,
+        );
+        self.dma_list_vblank_nosync.setup_scanline(
+            &self.timing,
+            &self.channels,
+            DviTimingLineState::FrontPorch,
+        );
+        self.dma_list_error.setup_scanline(
+            &self.timing,
+            &self.channels,
+            DviTimingLineState::Active,
+        );
+    }
+
+    // Note: does not start serializer
     pub fn start(&mut self) {
-        self.dma_channels.load_op(&self.dma_list_vblank_nosync);
-        // TODO: start DMA channels
+        self.channels.load_op(&self.dma_list_vblank_nosync);
+        self.channels.start();
         // TODO: wait for tx fifos full
-        self.serializer.enable();
     }
 }
 
 #[interrupt]
-fn DMA_IRQ_0() {}
+fn DMA_IRQ_0() {
+    critical_section::with(|cs| {
+        let mut guard = DVI_INST.borrow_ref_mut(cs);
+        let inst = guard.as_mut().unwrap();
+        inst.timing_state.advance(&inst.timing);
+        match inst.timing_state.v_state() {
+            DviTimingLineState::Active => {
+                inst.channels.load_op(&inst.dma_list_error);
+            }
+            DviTimingLineState::Sync => inst.channels.load_op(&inst.dma_list_vblank_sync),
+            _ => inst.channels.load_op(&inst.dma_list_vblank_nosync),
+        }
+    })
+}
