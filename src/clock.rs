@@ -1,4 +1,3 @@
-use defmt::dbg;
 use fugit::{KilohertzU32, MegahertzU32, RateExtU32};
 use rp_pico::{
     hal::{
@@ -28,7 +27,7 @@ const PICO_PLL_VCO_MAX_FREQ: MegahertzU32 = MegahertzU32::MHz(1600);
 /// Determine PLL parameters for target frequency
 ///
 /// Logic is adapted from check_sys_clock_khz in pico-sdk
-fn check_sys_clock_khz(requested_freq: KilohertzU32) -> Option<ClockCfg> {
+fn configure_sys_clock(requested_freq: KilohertzU32) -> Option<ClockCfg> {
     let crystal_freq: KilohertzU32 = XOSC_CRYSTAL_FREQ.Hz();
 
     // Its called a feedback divider but it really is a clock multiplier
@@ -91,7 +90,7 @@ pub fn init_clocks(
 
     let mut clocks = ClocksManager::new(clocks);
 
-    let clk_cfg = check_sys_clock_khz(freq_khz);
+    let clk_cfg = configure_sys_clock(freq_khz);
     let pll_config = match clk_cfg {
         Some(ClockCfg {
             vco_freq,

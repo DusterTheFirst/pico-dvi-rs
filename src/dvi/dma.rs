@@ -198,7 +198,7 @@ impl DmaCb {
         Ch1: SingleChannel,
     {
         self.read_addr = read_addr as *const _ as u32;
-        self.write_addr = dma_cfg.tx_fifo as u32;
+        self.write_addr = dma_cfg.tx_fifo;
         self.transfer_count = transfer_count;
         self.config = DmaChannelConfig::default()
             .ring(false, read_ring)
