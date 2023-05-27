@@ -1,4 +1,5 @@
-use fugit::RateExtU32;
+use defmt::dbg;
+use fugit::{KilohertzU32, MegahertzU32, RateExtU32};
 use rp_pico::{
     hal::{
         clocks::{ClockSource, ClocksManager},
@@ -15,38 +16,56 @@ use rp_pico::{
 };
 
 struct ClockCfg {
-    vco: u32,
-    postdiv1: u32,
-    postdiv2: u32,
+    vco_freq: KilohertzU32,
+    post_div1: u32,
+    post_div2: u32,
 }
 
 // Values taken from pico-sdk hardware_pll/include/hardware/pll.h
-const PICO_PLL_VCO_MIN_FREQ_MHZ: u32 = 750;
-const PICO_PLL_VCO_MAX_FREQ_MHZ: u32 = 1600;
+const PICO_PLL_VCO_MIN_FREQ: MegahertzU32 = MegahertzU32::MHz(750);
+const PICO_PLL_VCO_MAX_FREQ: MegahertzU32 = MegahertzU32::MHz(1600);
 
 /// Determine PLL parameters for target frequency
 ///
 /// Logic is adapted from check_sys_clock_khz in pico-sdk
-fn check_sys_clock_khz(freq_khz: u32) -> Option<ClockCfg> {
-    let crystal_freq_mhz = XOSC_CRYSTAL_FREQ / 1_000_000;
-    for fbdiv in (16..=320).rev() {
-        let vco = fbdiv * crystal_freq_mhz;
-        if vco < PICO_PLL_VCO_MIN_FREQ_MHZ * 1000 || vco > PICO_PLL_VCO_MAX_FREQ_MHZ * 1000 {
+fn check_sys_clock_khz(requested_freq: KilohertzU32) -> Option<ClockCfg> {
+    let crystal_freq: KilohertzU32 = XOSC_CRYSTAL_FREQ.Hz();
+
+    // Its called a feedback divider but it really is a clock multiplier
+    // see 2.18.2 in rp2040-datasheet.pdf
+    for feedback_divider in (16..=320).rev() {
+        let vco_freq: KilohertzU32 = feedback_divider * crystal_freq;
+
+        // Stop the loop since all consecutive numbers will also be less than this
+        if vco_freq < PICO_PLL_VCO_MIN_FREQ {
+            break;
+        }
+
+        if vco_freq > PICO_PLL_VCO_MAX_FREQ {
             continue;
         }
-        for postdiv1 in (1..=7).rev() {
-            for postdiv2 in (1..=postdiv1).rev() {
-                let out = vco / (postdiv1 * postdiv2);
-                if out == freq_khz && vco % (postdiv1 * postdiv2) == 0 {
+
+        for post_div1 in (1..=7).rev() {
+            for post_div2 in (1..=post_div1).rev() {
+                let divider = post_div1 * post_div2;
+
+                let output_frequency: KilohertzU32 = vco_freq / divider;
+
+                // Doing this instead of % to work around https://github.com/korken89/fugit/issues/41
+                // Ensure the vco_freq is divisible by the clock dividers
+                let vco_freq_divisible = output_frequency * divider == vco_freq;
+
+                if output_frequency == requested_freq && vco_freq_divisible {
                     return Some(ClockCfg {
-                        vco,
-                        postdiv1,
-                        postdiv2,
+                        vco_freq,
+                        post_div1,
+                        post_div2,
                     });
                 }
             }
         }
     }
+
     None
 }
 
@@ -59,7 +78,7 @@ pub fn init_clocks(
     pll_usb: pac::PLL_USB,
     resets: &mut pac::RESETS,
     watchdog: &mut Watchdog,
-    freq_khz: u32,
+    freq_khz: KilohertzU32,
 ) -> ClocksManager {
     // Enable the xosc
     let xosc = setup_xosc_blocking(xosc, XOSC_CRYSTAL_FREQ.Hz())
@@ -75,14 +94,14 @@ pub fn init_clocks(
     let clk_cfg = check_sys_clock_khz(freq_khz);
     let pll_config = match clk_cfg {
         Some(ClockCfg {
-            vco,
-            postdiv1,
-            postdiv2,
+            vco_freq,
+            post_div1,
+            post_div2,
         }) => PLLConfig {
-            vco_freq: vco.MHz(),
+            vco_freq: vco_freq.convert(),
             refdiv: 1,
-            post_div1: postdiv1 as u8,
-            post_div2: postdiv2 as u8,
+            post_div1: post_div1 as u8,
+            post_div2: post_div2 as u8,
         },
         None => PLL_SYS_125MHZ,
     };

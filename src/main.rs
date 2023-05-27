@@ -9,7 +9,7 @@ use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking 
 
 use cortex_m::delay::Delay;
 use defmt::{dbg, info};
-use embedded_hal::digital::v2::OutputPin;
+use embedded_hal::digital::v2::ToggleableOutputPin;
 use rp_pico::{
     hal::{
         dma::{Channel, DMAExt, CH0, CH1, CH2, CH3, CH4, CH5},
@@ -118,7 +118,7 @@ fn entry() -> ! {
         peripherals.PLL_USB,
         &mut peripherals.RESETS,
         &mut watchdog,
-        timing.bit_clk_khz,
+        timing.bit_clk,
     );
 
     let pins = Pins::new(
@@ -128,7 +128,7 @@ fn entry() -> ! {
         &mut peripherals.RESETS,
     );
 
-    let mut led_pin = pins.gpio16.into_push_pull_output_in_state(PinState::Low);
+    let mut led_pin = pins.led.into_push_pull_output_in_state(PinState::Low);
 
     let mut delay = Delay::new(
         core_peripherals.SYST,
@@ -186,12 +186,8 @@ fn entry() -> ! {
     //unsafe { dbg!(&framebuffer::FRAMEBUFFER_8BPP as *const _) };
 
     loop {
-        info!("high");
-        led_pin.set_high().unwrap();
-        delay.delay_ms(500);
-        info!("low");
-        led_pin.set_low().unwrap();
-        delay.delay_ms(500);
+        led_pin.toggle().unwrap();
+        delay.delay_ms(250);
     }
 }
 

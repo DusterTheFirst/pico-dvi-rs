@@ -1,23 +1,7 @@
 //! timing information yoinked from
 //! <https://github.com/Wren6991/PicoDVI/blob/51237271437e9d1eb62c97e40171fbf6ffe01ac6/software/libdvi/dvi_timing.c>
 
-// VGA -- we do this mode properly, with a pretty comfortable clk_sys (252 MHz)
-// const struct dvi_timing __dvi_const(dvi_timing_640x480p_60hz) = {
-// 	.h_sync_polarity   = false,
-// 	.h_front_porch     = 16,
-// 	.h_sync_width      = 96,
-// 	.h_back_porch      = 48,
-// 	.h_active_pixels   = 640,
-
-// 	.v_sync_polarity   = false,
-// 	.v_front_porch     = 10,
-// 	.v_sync_width      = 2,
-// 	.v_back_porch      = 33,
-// 	.v_active_lines    = 480,
-
-// 	.bit_clk_khz       = 252000
-// };
-
+use fugit::KilohertzU32;
 use rp_pico::hal::dma::SingleChannel;
 
 use super::{
@@ -40,7 +24,7 @@ pub struct DviTiming {
     v_back_porch: u32,
     v_active_lines: u32,
 
-    pub bit_clk_khz: u32,
+    pub bit_clk: KilohertzU32,
 }
 
 pub const VGA_TIMING: DviTiming = DviTiming {
@@ -56,7 +40,7 @@ pub const VGA_TIMING: DviTiming = DviTiming {
     v_back_porch: 33,
     v_active_lines: 480,
 
-    bit_clk_khz: 252000,
+    bit_clk: KilohertzU32::kHz(252000),
 };
 
 #[derive(Default)]
@@ -65,18 +49,13 @@ pub struct DviTimingState {
     v_state: DviTimingLineState,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum DviTimingLineState {
+    #[default]
     FrontPorch,
     Sync,
     BackPorch,
     Active,
-}
-
-impl Default for DviTimingLineState {
-    fn default() -> Self {
-        DviTimingLineState::FrontPorch
-    }
 }
 
 impl DviTiming {
