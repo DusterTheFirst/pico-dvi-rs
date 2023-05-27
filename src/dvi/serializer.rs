@@ -6,7 +6,7 @@ use rp_pico::{
             OutputSlewRate, Pin, PinId, PinMode, PullDown, ValidPinMode,
         },
         pio::{
-            self, InstalledProgram, PIOBuilder, StateMachine, StateMachineGroup3,
+            self, InstalledProgram, PIOBuilder, Running, StateMachine, StateMachineGroup3,
             StateMachineIndex, Stopped, Tx, UninitStateMachine,
         },
         pwm::{self, FreeRunning, Slice, ValidPwmOutputPin},
@@ -72,12 +72,18 @@ pub struct DviSerializer<
     data_pins: DviDataPins<RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>, // FIXME:
     clock_pins: DviClockPins<SliceId, Pos, Neg, FunctionPwm>,
 
-    state_machines: StateMachineGroup3<PIO, pio::SM0, pio::SM1, pio::SM2, Stopped>,
+    state_machines: StateMachineState<PIO>,
     tx_fifo: (
         Tx<(PIO, pio::SM0)>,
         Tx<(PIO, pio::SM1)>,
         Tx<(PIO, pio::SM2)>,
     ),
+}
+
+enum StateMachineState<PIO: pio::PIOExt> {
+    Stopped(StateMachineGroup3<PIO, pio::SM0, pio::SM1, pio::SM2, Stopped>),
+    Running(StateMachineGroup3<PIO, pio::SM0, pio::SM1, pio::SM2, Running>),
+    Taken,
 }
 
 impl<PIO, SliceId, ClockPos, ClockNeg, RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>
@@ -145,7 +151,7 @@ where
         neg_pin.set_output_override(output_override);
 
         pos_pin.set_drive_strength(OutputDriveStrength::TwoMilliAmps);
-        neg_pin.set_slew_rate(OutputSlewRate::Slow);
+        pos_pin.set_slew_rate(OutputSlewRate::Slow);
         pos_pin.set_output_override(output_override);
 
         (state_machine, tx)
@@ -198,23 +204,20 @@ where
         // 9 CLK -
         let clock_pwm = &mut clock_pins.pwm_slice;
         clock_pwm.default_config();
-        clock_pwm.disable();
         clock_pwm.set_top(9);
 
         clock_pwm.channel_a.clr_inverted();
         clock_pwm.channel_a.set_duty(5);
         let mut clock_pos = clock_pwm.channel_a.output_to(clock_pins.clock_pos);
-        clock_pos.set_drive_strength(OutputDriveStrength::TwelveMilliAmps);
-        clock_pos.set_slew_rate(OutputSlewRate::Fast);
+        clock_pos.set_drive_strength(OutputDriveStrength::TwoMilliAmps);
+        clock_pos.set_slew_rate(OutputSlewRate::Slow);
 
         clock_pwm.channel_b.set_inverted();
         clock_pwm.channel_b.set_duty(5);
         let mut clock_neg = clock_pwm.channel_b.output_to(clock_pins.clock_neg);
-        clock_neg.set_drive_strength(OutputDriveStrength::TwelveMilliAmps);
-        clock_neg.set_slew_rate(OutputSlewRate::Fast);
-
-        // TODO: DMA
-        // TODO: TMDS ENCODING
+        clock_neg.set_drive_strength(OutputDriveStrength::TwoMilliAmps);
+        clock_neg.set_slew_rate(OutputSlewRate::Slow);
+        clock_pwm.enable();
 
         Self {
             pio,
@@ -224,19 +227,34 @@ where
                 clock_neg,
                 pwm_slice: clock_pins.pwm_slice,
             },
-            state_machines: state_machine_red
-                .with(state_machine_green)
-                .with(state_machine_blue),
+            state_machines: StateMachineState::Stopped(
+                state_machine_red
+                    .with(state_machine_green)
+                    .with(state_machine_blue),
+            ),
             tx_fifo: (tx_red, tx_green, tx_blue),
         }
     }
 
-    pub fn enable(mut self) {
-        let state_machines = self.state_machines.sync().start();
-        self.clock_pins.pwm_slice.enable();
+    pub fn tx0(&self) -> &Tx<(PIO, pio::SM0)> {
+        &self.tx_fifo.0
+    }
 
-        // TODO: TMDS LANES
-        // TODO: DMA
-        // TODO: DVI typestate?
+    pub fn tx1(&self) -> &Tx<(PIO, pio::SM1)> {
+        &self.tx_fifo.1
+    }
+
+    pub fn tx2(&self) -> &Tx<(PIO, pio::SM2)> {
+        &self.tx_fifo.2
+    }
+
+    pub fn enable(&mut self) {
+        if let StateMachineState::Stopped(state_machines) =
+            core::mem::replace(&mut self.state_machines, StateMachineState::Taken)
+        {
+            let state_machines = state_machines.sync().start();
+            self.state_machines = StateMachineState::Running(state_machines);
+        }
+        self.clock_pins.pwm_slice.enable();
     }
 }
