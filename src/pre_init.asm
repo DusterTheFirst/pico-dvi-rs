@@ -1,6 +1,6 @@
-@ Copy data from flash into scratch_x and scratch_y ram banks since this
-@ is not handled already
-@ See https://github.com/rp-rs/rp-hal/issues/576 for more discusssion.
+# Copy data from flash into scratch_x and scratch_y ram banks since this
+# is not handled already
+# See https://github.com/rp-rs/rp-hal/issues/576 for more discusssion.
 
 .section .text
 .align 4
