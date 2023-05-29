@@ -3,10 +3,10 @@
 //! The PicoDVI source does not have a separate file for DMA; it's mostly
 //! split between dvi and dvi_timing.
 
-use rp_pico::hal::{
+use rp_pico::{hal::{
     dma::SingleChannel,
     pio::{Tx, ValidStateMachine},
-};
+}, pac::{Interrupt, NVIC}};
 
 use super::timing::DviScanlineDmaList;
 
@@ -134,6 +134,9 @@ where
     /// Enable interrupts and start the DMA transfers
     pub fn start(&mut self) {
         self.lane0.chan_data.listen_irq0();
+        unsafe {
+            NVIC::unmask(Interrupt::DMA_IRQ_0);
+        }
         let mut mask = 0;
         mask |= 1 << self.lane0.chan_ctrl.id();
         mask |= 1 << self.lane1.chan_ctrl.id();
