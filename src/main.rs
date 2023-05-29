@@ -110,12 +110,12 @@ fn entry() -> ! {
         peripherals.PIO0,
         &mut peripherals.RESETS,
         DviDataPins {
-            red_pos: pins.gpio10,
-            red_neg: pins.gpio11,
-            green_pos: pins.gpio12,
-            green_neg: pins.gpio13,
-            blue_pos: pins.gpio14,
-            blue_neg: pins.gpio15,
+            red_pos: pins.gpio10.into_mode(),
+            red_neg: pins.gpio11.into_mode(),
+            green_pos: pins.gpio12.into_mode(),
+            green_neg: pins.gpio13.into_mode(),
+            blue_pos: pins.gpio14.into_mode(),
+            blue_neg: pins.gpio15.into_mode(),
         },
         DviClockPins {
             clock_pos: pins.gpio8,

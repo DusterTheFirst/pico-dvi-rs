@@ -35,12 +35,12 @@ impl TmdsSym {
         let a = (byte << 1) ^ byte;
         let b = (a << 2) ^ a;
         let mut c = ((b << 4) ^ b) & 0xff;
-        let mut cnt_c = popcnt_byte(c);
         if cnt > 4 || (cnt == 4 && (c & 1) == 0) {
             c ^= 0xaa;
         } else {
             c ^= 0x100;
         }
+        let mut cnt_c = popcnt_byte(c & 0xff);
         let invert = if discrepancy == 0 || cnt_c == 4 {
             (c >> 8) == 0
         } else {

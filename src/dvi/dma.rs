@@ -86,6 +86,16 @@ where
             ch.ch_al1_ctrl.write(|w| w.bits(cfg.0));
         }
     }
+
+    fn wait_for_load(&self, n_words: u32) {
+        unsafe {
+            // CH{id}_DBG_TCR register, not exposed by HAL
+            let tcr = (0x5000_0804 + 0x40 * self.chan_data.id() as u32) as *mut u32;
+            while tcr.read_volatile() != n_words {
+                // tight_loop_contents()
+            }
+        }
+    }
 }
 
 impl<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5> DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>
@@ -134,6 +144,12 @@ where
             let multi_chan_trigger: *mut u32 = 0x50000430 as *mut _;
             multi_chan_trigger.write_volatile(mask);
         }
+    }
+
+    pub fn wait_for_load(&self, n_words: u32) {
+        self.lane0.wait_for_load(n_words);
+        self.lane1.wait_for_load(n_words);
+        self.lane2.wait_for_load(n_words);
     }
 }
 

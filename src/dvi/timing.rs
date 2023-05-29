@@ -67,6 +67,10 @@ impl DviTiming {
             DviTimingLineState::Active => self.v_active_lines,
         }
     }
+
+    pub fn horiz_words(&self) -> u32 {
+        self.h_active_pixels / 2
+    }
 }
 
 impl DviTimingLineState {
@@ -185,7 +189,8 @@ impl DviScanlineDmaList {
     }
 }
 
-const DVI_CTRL_SYMS: [TmdsPair; 4] = [
+#[link_section = ".data"]
+static DVI_CTRL_SYMS: [TmdsPair; 4] = [
     TmdsPair::double(TmdsSym::C0),
     TmdsPair::double(TmdsSym::C1),
     TmdsPair::double(TmdsSym::C2),
@@ -196,7 +201,8 @@ fn get_ctrl_sym(vsync: bool, hsync: bool) -> &'static TmdsPair {
     &DVI_CTRL_SYMS[((vsync as usize) << 1) | (hsync as usize)]
 }
 
-const EMPTY_SCANLINE_TMDS: [TmdsPair; 3] = [
+#[link_section = ".data"]
+static EMPTY_SCANLINE_TMDS: [TmdsPair; 3] = [
     TmdsPair::encode_balanced_approx(0x00),
     TmdsPair::encode_balanced_approx(0x00),
     TmdsPair::encode_balanced_approx(0xfe),
