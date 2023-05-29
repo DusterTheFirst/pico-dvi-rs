@@ -3,10 +3,13 @@
 //! The PicoDVI source does not have a separate file for DMA; it's mostly
 //! split between dvi and dvi_timing.
 
-use rp_pico::{hal::{
-    dma::SingleChannel,
-    pio::{Tx, ValidStateMachine},
-}, pac::{Interrupt, NVIC}};
+use rp_pico::{
+    hal::{
+        dma::SingleChannel,
+        pio::{Tx, ValidStateMachine},
+    },
+    pac::{Interrupt, NVIC},
+};
 
 use super::timing::DviScanlineDmaList;
 
@@ -144,7 +147,7 @@ where
         // TODO: bludgeon rp2040-hal, or whichever crate it is that's supposed to
         // be in charge of such things, into doing this the "right" way.
         unsafe {
-            let multi_chan_trigger: *mut u32 = 0x50000430 as *mut _;
+            let multi_chan_trigger: *mut u32 = 0x5000_0430 as *mut _;
             multi_chan_trigger.write_volatile(mask);
         }
     }

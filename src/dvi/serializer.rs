@@ -7,7 +7,7 @@ use rp_pico::{
         },
         pio::{
             self, InstalledProgram, PIOBuilder, PinDir, Running, StateMachine, StateMachineGroup3,
-            StateMachineIndex, Stopped, Tx, UninitStateMachine,
+            StateMachineIndex, Stopped, Tx, UninitStateMachine, ValidStateMachine,
         },
         pwm::{self, FreeRunning, Slice, ValidPwmOutputPin},
     },
@@ -251,6 +251,12 @@ where
         &self.tx_fifo.2
     }
 
+    pub fn wait_fifos_full(&self) {
+        wait_fifo_full(self.tx0());
+        wait_fifo_full(self.tx1());
+        wait_fifo_full(self.tx2());
+    }
+
     pub fn enable(&mut self) {
         if let StateMachineState::Stopped(state_machines) =
             core::mem::replace(&mut self.state_machines, StateMachineState::Taken)
@@ -259,5 +265,11 @@ where
             self.state_machines = StateMachineState::Running(state_machines);
         }
         self.clock_pins.pwm_slice.enable();
+    }
+}
+
+fn wait_fifo_full<SM: ValidStateMachine>(fifo: &Tx<SM>) {
+    while !fifo.is_full() {
+        // tight_loop_contents()
     }
 }

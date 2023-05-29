@@ -141,6 +141,7 @@ fn entry() -> ! {
     critical_section::with(|cs| {
         inst.setup_dma();
         inst.start();
+        serializer.wait_fifos_full();
         serializer.enable();
         DVI_INST.borrow(cs).replace(Some(inst));
     });

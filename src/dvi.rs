@@ -80,7 +80,6 @@ where
     pub fn start(&mut self) {
         self.channels.load_op(&self.dma_list_vblank_nosync);
         self.channels.start();
-        // TODO: wait for tx fifos full
     }
 }
 
