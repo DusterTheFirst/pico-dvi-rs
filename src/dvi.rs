@@ -90,6 +90,7 @@ fn DMA_IRQ_0() {
     critical_section::with(|cs| {
         let mut guard = DVI_INST.borrow_ref_mut(cs);
         let inst = guard.as_mut().unwrap();
+        let _ = inst.channels.check_int();
         inst.timing_state.advance(&inst.timing);
         // wait for all three channels to load their last op
         inst.channels.wait_for_load(inst.timing.horiz_words());

@@ -154,6 +154,10 @@ where
         self.lane1.wait_for_load(n_words);
         self.lane2.wait_for_load(n_words);
     }
+
+    pub fn check_int(&mut self) -> bool {
+        self.lane0.chan_data.check_irq0()
+    }
 }
 
 impl Default for DmaChannelConfig {
