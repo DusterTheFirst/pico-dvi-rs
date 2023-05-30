@@ -3,9 +3,12 @@
 //! The PicoDVI source does not have a separate file for DMA; it's mostly
 //! split between dvi and dvi_timing.
 
-use rp_pico::hal::{
-    dma::SingleChannel,
-    pio::{Tx, ValidStateMachine},
+use rp_pico::{
+    hal::{
+        dma::SingleChannel,
+        pio::{Tx, ValidStateMachine},
+    },
+    pac::{Interrupt, NVIC},
 };
 
 use super::timing::DviScanlineDmaList;
@@ -86,6 +89,16 @@ where
             ch.ch_al1_ctrl.write(|w| w.bits(cfg.0));
         }
     }
+
+    fn wait_for_load(&self, n_words: u32) {
+        unsafe {
+            // CH{id}_DBG_TCR register, not exposed by HAL
+            let tcr = (0x5000_0804 + 0x40 * self.chan_data.id() as u32) as *mut u32;
+            while tcr.read_volatile() != n_words {
+                // tight_loop_contents()
+            }
+        }
+    }
 }
 
 impl<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5> DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>
@@ -124,6 +137,9 @@ where
     /// Enable interrupts and start the DMA transfers
     pub fn start(&mut self) {
         self.lane0.chan_data.listen_irq0();
+        unsafe {
+            NVIC::unmask(Interrupt::DMA_IRQ_0);
+        }
         let mut mask = 0;
         mask |= 1 << self.lane0.chan_ctrl.id();
         mask |= 1 << self.lane1.chan_ctrl.id();
@@ -131,9 +147,19 @@ where
         // TODO: bludgeon rp2040-hal, or whichever crate it is that's supposed to
         // be in charge of such things, into doing this the "right" way.
         unsafe {
-            let multi_chan_trigger: *mut u32 = 0x50000430 as *mut _;
+            let multi_chan_trigger: *mut u32 = 0x5000_0430 as *mut _;
             multi_chan_trigger.write_volatile(mask);
         }
+    }
+
+    pub fn wait_for_load(&self, n_words: u32) {
+        self.lane0.wait_for_load(n_words);
+        self.lane1.wait_for_load(n_words);
+        self.lane2.wait_for_load(n_words);
+    }
+
+    pub fn check_int(&mut self) -> bool {
+        self.lane0.chan_data.check_irq0()
     }
 }
 

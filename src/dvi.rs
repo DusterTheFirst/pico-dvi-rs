@@ -80,16 +80,19 @@ where
     pub fn start(&mut self) {
         self.channels.load_op(&self.dma_list_vblank_nosync);
         self.channels.start();
-        // TODO: wait for tx fifos full
     }
 }
 
+#[link_section = ".data"]
 #[interrupt]
 fn DMA_IRQ_0() {
     critical_section::with(|cs| {
         let mut guard = DVI_INST.borrow_ref_mut(cs);
         let inst = guard.as_mut().unwrap();
+        let _ = inst.channels.check_int();
         inst.timing_state.advance(&inst.timing);
+        // wait for all three channels to load their last op
+        inst.channels.wait_for_load(inst.timing.horiz_words());
         match inst.timing_state.v_state() {
             DviTimingLineState::Active => {
                 inst.channels.load_op(&inst.dma_list_error);

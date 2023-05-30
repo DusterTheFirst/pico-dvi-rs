@@ -6,8 +6,8 @@ use rp_pico::{
             OutputSlewRate, Pin, PinId, PinMode, PullDown, ValidPinMode,
         },
         pio::{
-            self, InstalledProgram, PIOBuilder, Running, StateMachine, StateMachineGroup3,
-            StateMachineIndex, Stopped, Tx, UninitStateMachine,
+            self, InstalledProgram, PIOBuilder, PinDir, Running, StateMachine, StateMachineGroup3,
+            StateMachineIndex, Stopped, Tx, UninitStateMachine, ValidStateMachine,
         },
         pwm::{self, FreeRunning, Slice, ValidPwmOutputPin},
     },
@@ -16,21 +16,21 @@ use rp_pico::{
 
 pub struct DviDataPins<RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>
 where
-    RedPos: PinId,
-    RedNeg: PinId,
-    GreenPos: PinId,
-    GreenNeg: PinId,
-    BluePos: PinId,
-    BlueNeg: PinId,
+    RedPos: PinId + bank0::BankPinId,
+    RedNeg: PinId + bank0::BankPinId,
+    GreenPos: PinId + bank0::BankPinId,
+    GreenNeg: PinId + bank0::BankPinId,
+    BluePos: PinId + bank0::BankPinId,
+    BlueNeg: PinId + bank0::BankPinId,
 {
-    pub red_pos: Pin<RedPos, gpio::Disabled<PullDown>>,
-    pub red_neg: Pin<RedNeg, gpio::Disabled<PullDown>>,
+    pub red_pos: Pin<RedPos, gpio::FunctionPio0>,
+    pub red_neg: Pin<RedNeg, gpio::FunctionPio0>,
 
-    pub green_pos: Pin<GreenPos, gpio::Disabled<PullDown>>,
-    pub green_neg: Pin<GreenNeg, gpio::Disabled<PullDown>>,
+    pub green_pos: Pin<GreenPos, gpio::FunctionPio0>,
+    pub green_neg: Pin<GreenNeg, gpio::FunctionPio0>,
 
-    pub blue_pos: Pin<BluePos, gpio::Disabled<PullDown>>,
-    pub blue_neg: Pin<BlueNeg, gpio::Disabled<PullDown>>,
+    pub blue_pos: Pin<BluePos, gpio::FunctionPio0>,
+    pub blue_neg: Pin<BlueNeg, gpio::FunctionPio0>,
 }
 
 pub struct DviClockPins<SliceId, Pos, Neg, Mode>
@@ -61,12 +61,12 @@ pub struct DviSerializer<
     SliceId: pwm::SliceId,
     Pos: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::A>,
     Neg: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::B>,
-    RedPos: PinId,
-    RedNeg: PinId,
-    GreenPos: PinId,
-    GreenNeg: PinId,
-    BluePos: PinId,
-    BlueNeg: PinId,
+    RedPos: PinId + bank0::BankPinId,
+    RedNeg: PinId + bank0::BankPinId,
+    GreenPos: PinId + bank0::BankPinId,
+    GreenNeg: PinId + bank0::BankPinId,
+    BluePos: PinId + bank0::BankPinId,
+    BlueNeg: PinId + bank0::BankPinId,
 {
     pio: pio::PIO<PIO>, // FIXME:
     data_pins: DviDataPins<RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>, // FIXME:
@@ -104,22 +104,22 @@ where
     SliceId: pwm::SliceId,
     ClockPos: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::A>,
     ClockNeg: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::B>,
-    RedPos: PinId,
-    RedNeg: PinId,
-    GreenPos: PinId,
-    GreenNeg: PinId,
-    BluePos: PinId,
-    BlueNeg: PinId,
+    RedPos: PinId + bank0::BankPinId,
+    RedNeg: PinId + bank0::BankPinId,
+    GreenPos: PinId + bank0::BankPinId,
+    GreenNeg: PinId + bank0::BankPinId,
+    BluePos: PinId + bank0::BankPinId,
+    BlueNeg: PinId + bank0::BankPinId,
 {
     fn configure_state_machine<Pos, Neg, SM>(
         program: &InstalledProgram<PIO>,
         state_machine: UninitStateMachine<(PIO, SM)>,
-        pos_pin: &mut Pin<Pos, gpio::Disabled<PullDown>>,
-        neg_pin: &mut Pin<Neg, gpio::Disabled<PullDown>>,
+        pos_pin: &mut Pin<Pos, gpio::FunctionPio0>,
+        neg_pin: &mut Pin<Neg, gpio::FunctionPio0>,
     ) -> (StateMachine<(PIO, SM), Stopped>, Tx<(PIO, SM)>)
     where
-        Pos: PinId,
-        Neg: PinId,
+        Pos: PinId + bank0::BankPinId,
+        Neg: PinId + bank0::BankPinId,
         SM: StateMachineIndex,
     {
         let positive_id = pos_pin.id().num;
@@ -138,13 +138,16 @@ where
             OutputOverride::DontInvert
         };
 
-        let (state_machine, _, tx) = PIOBuilder::from_program(unsafe { program.share() })
+        let (mut state_machine, _, tx) = PIOBuilder::from_program(unsafe { program.share() })
             .side_set_pin_base(negative_id.min(positive_id))
-            .clock_divisor_fixed_point(1, 1)
+            .clock_divisor_fixed_point(1, 0)
             .autopull(true)
-            .buffers(pio::Buffers::OnlyRx)
-            .pull_threshold(8)
+            .buffers(pio::Buffers::OnlyTx)
+            .pull_threshold(20)
+            .out_shift_direction(pio::ShiftDirection::Right)
             .build(state_machine);
+
+        state_machine.set_pindirs([(negative_id, PinDir::Output), (positive_id, PinDir::Output)]);
 
         neg_pin.set_drive_strength(OutputDriveStrength::TwoMilliAmps);
         neg_pin.set_slew_rate(OutputSlewRate::Slow);
@@ -248,6 +251,12 @@ where
         &self.tx_fifo.2
     }
 
+    pub fn wait_fifos_full(&self) {
+        wait_fifo_full(self.tx0());
+        wait_fifo_full(self.tx1());
+        wait_fifo_full(self.tx2());
+    }
+
     pub fn enable(&mut self) {
         if let StateMachineState::Stopped(state_machines) =
             core::mem::replace(&mut self.state_machines, StateMachineState::Taken)
@@ -256,5 +265,11 @@ where
             self.state_machines = StateMachineState::Running(state_machines);
         }
         self.clock_pins.pwm_slice.enable();
+    }
+}
+
+fn wait_fifo_full<SM: ValidStateMachine>(fifo: &Tx<SM>) {
+    while !fifo.is_full() {
+        // tight_loop_contents()
     }
 }
