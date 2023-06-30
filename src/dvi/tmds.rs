@@ -16,14 +16,6 @@ pub struct TmdsSymbol(u32);
 #[derive(Clone, Copy)]
 pub struct TmdsPair(u32);
 
-/// A version of popcnt that works on one-byte values, designed
-/// to be compact in code size and fast on 32 bit microcontrollers.
-const fn popcnt_byte(byte: u32) -> u32 {
-    let a = ((byte >> 1) & 0x55) + (byte & 0x55);
-    let b = ((a >> 2) & 0x33) + (a & 0x33);
-    ((b >> 4) + b) & 0xf
-}
-
 impl TmdsSymbol {
     pub const C0: Self = TmdsSymbol(0x354);
     pub const C1: Self = TmdsSymbol(0xab);
@@ -31,7 +23,7 @@ impl TmdsSymbol {
     pub const C3: Self = TmdsSymbol(0x2ab);
 
     pub const fn encode(discrepancy: i32, byte: u32) -> (i32, Self) {
-        let byte_ones = popcnt_byte(byte);
+        let byte_ones = u8::count_ones(byte as u8);
         let a = (byte << 1) ^ byte;
         let b = (a << 2) ^ a;
         let mut c = ((b << 4) ^ b) & 0xff;
@@ -42,7 +34,7 @@ impl TmdsSymbol {
             c ^= 0x100;
         }
 
-        let mut c_ones = popcnt_byte(c & 0xff);
+        let mut c_ones = u8::count_ones(c as u8);
 
         let invert = if discrepancy == 0 || c_ones == 4 {
             (c >> 8) == 0
@@ -80,4 +72,12 @@ impl TmdsPair {
             Self::new(symbol_0, symbol_1)
         }
     }
+}
+
+// TODO: https://lib.rs/crates/defmt-test
+// TODO: generate test cases from known working implementation???
+#[defmt_test::tests]
+mod test {
+    #[test]
+    fn encode() {}
 }

@@ -28,6 +28,7 @@ rp-pico  = { version = "0.7.0", features = ["rom-v2-intrinsics"] }
 
 embedded-graphics = { version = "0.7.1", features = ["fixed_point"] }
 modular-bitfield  = "0.11.2"
+defmt-test = "0.3.0"
 
 # cargo build/run
 [profile.dev]
