@@ -6,7 +6,7 @@ use rp_pico::hal::dma::SingleChannel;
 
 use super::{
     dma::{DmaCb, DmaChannels, DviLaneDmaCfg},
-    tmds::{TmdsPair, TmdsSym},
+    tmds::{TmdsPair, TmdsSymbol},
 };
 
 // Perhaps there should be a trait with associated constants for resolution,
@@ -191,10 +191,10 @@ impl DviScanlineDmaList {
 
 #[link_section = ".data"]
 static DVI_CTRL_SYMS: [TmdsPair; 4] = [
-    TmdsPair::double(TmdsSym::C0),
-    TmdsPair::double(TmdsSym::C1),
-    TmdsPair::double(TmdsSym::C2),
-    TmdsPair::double(TmdsSym::C3),
+    TmdsPair::double(TmdsSymbol::C0),
+    TmdsPair::double(TmdsSymbol::C1),
+    TmdsPair::double(TmdsSymbol::C2),
+    TmdsPair::double(TmdsSymbol::C3),
 ];
 
 fn get_ctrl_sym(vsync: bool, hsync: bool) -> &'static TmdsPair {
