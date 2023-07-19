@@ -82,6 +82,7 @@ where
             let write_addr = self.chan_data.ch().ch_read_addr.as_ptr();
             ch.ch_write_addr.write(|w| w.bits(write_addr as u32));
             let cfg = DmaChannelConfig::default()
+                .chain_to(self.chan_ctrl.id())
                 .ring(true, 4)
                 .read_increment(true)
                 .write_increment(true);
