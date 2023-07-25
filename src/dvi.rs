@@ -91,7 +91,7 @@ fn DMA_IRQ_0() {
         let _ = inst.channels.check_int();
         inst.timing_state.advance(&inst.timing);
         // wait for all three channels to load their last op
-        inst.channels.wait_for_load(inst.timing.horiz_words());
+        inst.channels.wait_for_load(inst.timing.horizontal_words());
         match inst.timing_state.v_state() {
             DviTimingLineState::Active => {
                 inst.channels.load_op(&inst.dma_list_error);

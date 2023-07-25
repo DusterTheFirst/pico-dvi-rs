@@ -18,10 +18,51 @@ where
     Ch0: SingleChannel,
     Ch1: SingleChannel,
 {
-    chan_ctrl: Ch0,
-    chan_data: Ch1,
+    control_channel: Ch0,
+    data_channel: Ch1,
     tx_fifo: u32,
     dreq: u8,
+}
+
+impl<Ch0, Ch1> DviLaneDmaCfg<Ch0, Ch1>
+where
+    Ch0: SingleChannel,
+    Ch1: SingleChannel,
+{
+    fn new<SM: ValidStateMachine>(ch0: Ch0, ch1: Ch1, tx: &Tx<SM>) -> Self {
+        DviLaneDmaCfg {
+            control_channel: ch0,
+            data_channel: ch1,
+            tx_fifo: tx.fifo_address() as u32,
+            dreq: tx.dreq_value(),
+        }
+    }
+
+    fn load_op(&mut self, cfg: &[DmaControlBlock]) {
+        let ch = self.control_channel.ch();
+        unsafe {
+            ch.ch_read_addr.write(|w| w.bits(cfg.as_ptr() as u32));
+            let write_addr = self.data_channel.ch().ch_read_addr.as_ptr();
+            ch.ch_write_addr.write(|w| w.bits(write_addr as u32));
+            let cfg = DmaChannelConfig::default()
+                .chain_to(self.control_channel.id())
+                .ring(true, 4)
+                .read_increment(true)
+                .write_increment(true);
+            ch.ch_trans_count.write(|w| w.bits(4));
+            ch.ch_al1_ctrl.write(|w| w.bits(cfg.0));
+        }
+    }
+
+    fn wait_for_load(&self, n_words: u32) {
+        unsafe {
+            // CH{id}_DBG_TCR register, not exposed by HAL
+            let tcr = (0x5000_0804 + 0x40 * self.data_channel.id() as u32) as *mut u32;
+            while tcr.read_volatile() != n_words {
+                // tight_loop_contents()
+            }
+        }
+    }
 }
 
 pub struct DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>
@@ -36,70 +77,6 @@ where
     pub lane0: DviLaneDmaCfg<Ch0, Ch1>,
     pub lane1: DviLaneDmaCfg<Ch2, Ch3>,
     pub lane2: DviLaneDmaCfg<Ch4, Ch5>,
-}
-
-/// DMA control block.
-///
-/// This is a small chunk of memory transferred by the control DMA channel
-/// into the control registers of the data channel.
-#[repr(C)]
-#[derive(Default)]
-pub struct DmaCb {
-    read_addr: u32,
-    write_addr: u32,
-    transfer_count: u32,
-    config: DmaChannelConfig,
-}
-
-// We're doing this by hand because it's not provided by rp2040-pac, as it's
-// based on svd2rust (which is quite tight-assed), but would be provided by
-// the hal if we were using rp_pac, which is chiptool-based.
-//
-// Another note: the caller *must* set `chain_to`, as the default points to
-// channel zero. Setting it to the same channel disables the function.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-struct DmaChannelConfig(u32);
-
-impl<Ch0, Ch1> DviLaneDmaCfg<Ch0, Ch1>
-where
-    Ch0: SingleChannel,
-    Ch1: SingleChannel,
-{
-    fn new<SM: ValidStateMachine>(ch0: Ch0, ch1: Ch1, tx: &Tx<SM>) -> Self {
-        DviLaneDmaCfg {
-            chan_ctrl: ch0,
-            chan_data: ch1,
-            tx_fifo: tx.fifo_address() as u32,
-            dreq: tx.dreq_value(),
-        }
-    }
-
-    fn load_op(&mut self, cfg: &[DmaCb]) {
-        let ch = self.chan_ctrl.ch();
-        unsafe {
-            ch.ch_read_addr.write(|w| w.bits(cfg.as_ptr() as u32));
-            let write_addr = self.chan_data.ch().ch_read_addr.as_ptr();
-            ch.ch_write_addr.write(|w| w.bits(write_addr as u32));
-            let cfg = DmaChannelConfig::default()
-                .chain_to(self.chan_ctrl.id())
-                .ring(true, 4)
-                .read_increment(true)
-                .write_increment(true);
-            ch.ch_trans_count.write(|w| w.bits(4));
-            ch.ch_al1_ctrl.write(|w| w.bits(cfg.0));
-        }
-    }
-
-    fn wait_for_load(&self, n_words: u32) {
-        unsafe {
-            // CH{id}_DBG_TCR register, not exposed by HAL
-            let tcr = (0x5000_0804 + 0x40 * self.chan_data.id() as u32) as *mut u32;
-            while tcr.read_volatile() != n_words {
-                // tight_loop_contents()
-            }
-        }
-    }
 }
 
 impl<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5> DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>
@@ -137,14 +114,14 @@ where
 
     /// Enable interrupts and start the DMA transfers
     pub fn start(&mut self) {
-        self.lane0.chan_data.listen_irq0();
+        self.lane0.data_channel.listen_irq0();
         unsafe {
             NVIC::unmask(Interrupt::DMA_IRQ_0);
         }
         let mut mask = 0;
-        mask |= 1 << self.lane0.chan_ctrl.id();
-        mask |= 1 << self.lane1.chan_ctrl.id();
-        mask |= 1 << self.lane2.chan_ctrl.id();
+        mask |= 1 << self.lane0.control_channel.id();
+        mask |= 1 << self.lane1.control_channel.id();
+        mask |= 1 << self.lane2.control_channel.id();
         // TODO: bludgeon rp2040-hal, or whichever crate it is that's supposed to
         // be in charge of such things, into doing this the "right" way.
         unsafe {
@@ -160,9 +137,56 @@ where
     }
 
     pub fn check_int(&mut self) -> bool {
-        self.lane0.chan_data.check_irq0()
+        self.lane0.data_channel.check_irq0()
     }
 }
+
+/// DMA control block.
+///
+/// This is a small chunk of memory transferred by the control DMA channel
+/// into the control registers of the data channel.
+#[repr(C)]
+#[derive(Default)]
+pub struct DmaControlBlock {
+    read_addr: u32,
+    write_addr: u32,
+    transfer_count: u32,
+    config: DmaChannelConfig,
+}
+
+impl DmaControlBlock {
+    pub fn set<T, Ch0, Ch1>(
+        &mut self,
+        read_addr: &'static T,
+        dma_cfg: &DviLaneDmaCfg<Ch0, Ch1>,
+        transfer_count: u32,
+        read_ring: u32,
+        irq_on_finish: bool,
+    ) where
+        Ch0: SingleChannel,
+        Ch1: SingleChannel,
+    {
+        // Safety: read_addr is 'static, so the pointer should always be valid.
+        self.read_addr = read_addr as *const _ as u32;
+        self.write_addr = dma_cfg.tx_fifo;
+        self.transfer_count = transfer_count;
+        self.config = DmaChannelConfig::default()
+            .ring(false, read_ring)
+            .dreq(dma_cfg.dreq)
+            .chain_to(dma_cfg.control_channel.id())
+            .irq_quiet(!irq_on_finish);
+    }
+}
+
+// We're doing this by hand because it's not provided by rp2040-pac, as it's
+// based on svd2rust (which is quite tight-assed), but would be provided by
+// the hal if we were using rp_pac, which is chiptool-based.
+//
+// Another note: the caller *must* set `chain_to`, as the default points to
+// channel zero. Setting it to the same channel disables the function.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct DmaChannelConfig(u32);
 
 impl Default for DmaChannelConfig {
     fn default() -> Self {
@@ -209,28 +233,5 @@ impl DmaChannelConfig {
         let mut bits = self.0 & !(1 << 21);
         bits |= (quiet as u32) << 21;
         Self(bits)
-    }
-}
-
-impl DmaCb {
-    pub fn set<T, Ch0, Ch1>(
-        &mut self,
-        read_addr: &T,
-        dma_cfg: &DviLaneDmaCfg<Ch0, Ch1>,
-        transfer_count: u32,
-        read_ring: u32,
-        irq_on_finish: bool,
-    ) where
-        Ch0: SingleChannel,
-        Ch1: SingleChannel,
-    {
-        self.read_addr = read_addr as *const _ as u32;
-        self.write_addr = dma_cfg.tx_fifo;
-        self.transfer_count = transfer_count;
-        self.config = DmaChannelConfig::default()
-            .ring(false, read_ring)
-            .dreq(dma_cfg.dreq)
-            .chain_to(dma_cfg.chan_ctrl.id())
-            .irq_quiet(!irq_on_finish);
     }
 }

@@ -5,7 +5,7 @@ use fugit::KilohertzU32;
 use rp_pico::hal::dma::SingleChannel;
 
 use super::{
-    dma::{DmaCb, DmaChannels, DviLaneDmaCfg},
+    dma::{DmaChannels, DmaControlBlock, DviLaneDmaCfg},
     tmds::{TmdsPair, TmdsSymbol},
 };
 
@@ -25,6 +25,21 @@ pub struct DviTiming {
     v_active_lines: u32,
 
     pub bit_clk: KilohertzU32,
+}
+
+impl DviTiming {
+    fn n_lines_for_state(&self, state: DviTimingLineState) -> u32 {
+        match state {
+            DviTimingLineState::FrontPorch => self.v_front_porch,
+            DviTimingLineState::Sync => self.v_sync_width,
+            DviTimingLineState::BackPorch => self.v_back_porch,
+            DviTimingLineState::Active => self.v_active_lines,
+        }
+    }
+
+    pub fn horizontal_words(&self) -> u32 {
+        self.h_active_pixels / 2
+    }
 }
 
 pub const VGA_TIMING: DviTiming = DviTiming {
@@ -49,42 +64,6 @@ pub struct DviTimingState {
     v_state: DviTimingLineState,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub enum DviTimingLineState {
-    #[default]
-    FrontPorch,
-    Sync,
-    BackPorch,
-    Active,
-}
-
-impl DviTiming {
-    fn n_lines_for_state(&self, state: DviTimingLineState) -> u32 {
-        match state {
-            DviTimingLineState::FrontPorch => self.v_front_porch,
-            DviTimingLineState::Sync => self.v_sync_width,
-            DviTimingLineState::BackPorch => self.v_back_porch,
-            DviTimingLineState::Active => self.v_active_lines,
-        }
-    }
-
-    pub fn horiz_words(&self) -> u32 {
-        self.h_active_pixels / 2
-    }
-}
-
-impl DviTimingLineState {
-    fn next(self) -> Self {
-        use DviTimingLineState::*;
-        match self {
-            FrontPorch => Sync,
-            Sync => BackPorch,
-            BackPorch => Active,
-            Active => FrontPorch,
-        }
-    }
-}
-
 impl DviTimingState {
     pub fn advance(&mut self, timing: &DviTiming) {
         self.v_ctr += 1;
@@ -99,18 +78,39 @@ impl DviTimingState {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum DviTimingLineState {
+    #[default]
+    FrontPorch,
+    Sync,
+    BackPorch,
+    Active,
+}
+
+impl DviTimingLineState {
+    fn next(self) -> Self {
+        use DviTimingLineState::*;
+        match self {
+            FrontPorch => Sync,
+            Sync => BackPorch,
+            BackPorch => Active,
+            Active => FrontPorch,
+        }
+    }
+}
+
 const DVI_SYNC_LANE_CHUNKS: usize = 4;
-const DVI_NOSYNC_LANE_CHUNKS: usize = 2;
+const DVI_LANE_CHUNKS: usize = 2;
 
 #[derive(Default)]
 pub struct DviScanlineDmaList {
-    l0: [DmaCb; DVI_SYNC_LANE_CHUNKS],
-    l1: [DmaCb; DVI_NOSYNC_LANE_CHUNKS],
-    l2: [DmaCb; DVI_NOSYNC_LANE_CHUNKS],
+    l0: [DmaControlBlock; DVI_SYNC_LANE_CHUNKS],
+    l1: [DmaControlBlock; DVI_LANE_CHUNKS],
+    l2: [DmaControlBlock; DVI_LANE_CHUNKS],
 }
 
 impl DviScanlineDmaList {
-    pub fn lane(&self, i: usize) -> &[DmaCb] {
+    pub fn lane(&self, i: usize) -> &[DmaControlBlock] {
         match i {
             0 => &self.l0,
             1 => &self.l1,
@@ -118,7 +118,7 @@ impl DviScanlineDmaList {
         }
     }
 
-    fn lane_mut(&mut self, i: usize) -> &mut [DmaCb] {
+    fn lane_mut(&mut self, i: usize) -> &mut [DmaControlBlock] {
         match i {
             0 => &mut self.l0,
             1 => &mut self.l1,
@@ -128,46 +128,53 @@ impl DviScanlineDmaList {
 
     fn setup_lane_0<Ch0, Ch1>(
         &mut self,
-        t: &DviTiming,
+        timing: &DviTiming,
         dma_cfg: &DviLaneDmaCfg<Ch0, Ch1>,
         line_state: DviTimingLineState,
     ) where
         Ch0: SingleChannel,
         Ch1: SingleChannel,
     {
-        let vsync = (line_state == DviTimingLineState::Sync) == t.v_sync_polarity;
-        let sym_hsync_off = get_ctrl_sym(vsync, !t.h_sync_polarity);
-        let sym_hsync_on = get_ctrl_sym(vsync, t.h_sync_polarity);
-        let lane = &mut self.l0;
-        lane[0].set(sym_hsync_off, dma_cfg, t.h_front_porch / 2, 2, false);
-        lane[1].set(sym_hsync_on, dma_cfg, t.h_sync_width / 2, 2, false);
-        lane[2].set(sym_hsync_off, dma_cfg, t.h_back_porch / 2, 2, true);
-        let sym = match line_state {
-            DviTimingLineState::Active => &EMPTY_SCANLINE_TMDS[0],
-            _ => sym_hsync_off,
+        let vsync = if line_state == DviTimingLineState::Sync {
+            timing.v_sync_polarity
+        } else {
+            !timing.v_sync_polarity
         };
-        lane[3].set(sym, dma_cfg, t.h_active_pixels / 2, 2, false);
+
+        let symbol_hsync_off = get_ctrl_symbol(vsync, !timing.h_sync_polarity);
+        let symbol_hsync_on = get_ctrl_symbol(vsync, timing.h_sync_polarity);
+
+        let lane = &mut self.l0;
+        lane[0].set(symbol_hsync_off, dma_cfg, timing.h_front_porch / 2, 2, false);
+        lane[1].set(symbol_hsync_on, dma_cfg, timing.h_sync_width / 2, 2, false);
+        lane[2].set(symbol_hsync_off, dma_cfg, timing.h_back_porch / 2, 2, true);
+        let symbol = match line_state {
+            DviTimingLineState::Active => &EMPTY_SCANLINE_TMDS[0],
+            _ => symbol_hsync_off,
+        };
+        lane[3].set(symbol, dma_cfg, timing.h_active_pixels / 2, 2, false);
     }
 
     fn setup_lane_12<Ch0, Ch1>(
         &mut self,
         lane_number: usize,
-        t: &DviTiming,
+        timing: &DviTiming,
         dma_cfg: &DviLaneDmaCfg<Ch0, Ch1>,
         line_state: DviTimingLineState,
     ) where
         Ch0: SingleChannel,
         Ch1: SingleChannel,
     {
-        let sym_no_sync = get_ctrl_sym(false, false);
+        let symbol_no_sync = get_ctrl_symbol(false, false);
+
         let lane = self.lane_mut(lane_number);
-        let inactive = t.h_front_porch + t.h_sync_width + t.h_back_porch;
-        lane[0].set(sym_no_sync, dma_cfg, inactive / 2, 2, false);
+        let inactive = timing.h_front_porch + timing.h_sync_width + timing.h_back_porch;
+        lane[0].set(symbol_no_sync, dma_cfg, inactive / 2, 2, false);
         let sym = match line_state {
             DviTimingLineState::Active => &EMPTY_SCANLINE_TMDS[lane_number],
-            _ => sym_no_sync,
+            _ => symbol_no_sync,
         };
-        lane[1].set(sym, dma_cfg, t.h_active_pixels / 2, 2, false);
+        lane[1].set(sym, dma_cfg, timing.h_active_pixels / 2, 2, false);
     }
 
     pub fn setup_scanline<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>(
@@ -190,20 +197,20 @@ impl DviScanlineDmaList {
 }
 
 #[link_section = ".data"]
-static DVI_CTRL_SYMS: [TmdsPair; 4] = [
+static DVI_CTRL_SYMBOLS: [TmdsPair; 4] = [
     TmdsPair::double(TmdsSymbol::C0),
     TmdsPair::double(TmdsSymbol::C1),
     TmdsPair::double(TmdsSymbol::C2),
     TmdsPair::double(TmdsSymbol::C3),
 ];
 
-fn get_ctrl_sym(vsync: bool, hsync: bool) -> &'static TmdsPair {
-    &DVI_CTRL_SYMS[((vsync as usize) << 1) | (hsync as usize)]
+fn get_ctrl_symbol(vsync: bool, hsync: bool) -> &'static TmdsPair {
+    &DVI_CTRL_SYMBOLS[((vsync as usize) << 1) | (hsync as usize)]
 }
 
 #[link_section = ".data"]
 static EMPTY_SCANLINE_TMDS: [TmdsPair; 3] = [
     TmdsPair::encode_balanced_approx(0x00),
-    TmdsPair::encode_balanced_approx(0x00),
     TmdsPair::encode_balanced_approx(0xfe),
+    TmdsPair::encode_balanced_approx(0x00),
 ];
