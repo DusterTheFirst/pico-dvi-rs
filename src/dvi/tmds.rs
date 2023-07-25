@@ -76,6 +76,7 @@ impl TmdsPair {
 
 // TODO: https://lib.rs/crates/defmt-test
 // TODO: generate test cases from known working implementation???
+#[cfg(test)]
 #[defmt_test::tests]
 mod test {
     #[test]
