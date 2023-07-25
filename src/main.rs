@@ -106,22 +106,49 @@ fn entry() -> ! {
     let pwm_slices = pwm::Slices::new(peripherals.PWM, &mut peripherals.RESETS);
     let dma = peripherals.DMA.split(&mut peripherals.RESETS);
 
+    // Raph
+    // let (data_pins, clock_pins) = {
+    //     (
+    //         DviDataPins {
+    //             red_pos: pins.gpio10.into_mode(),
+    //             red_neg: pins.gpio11.into_mode(),
+    //             green_pos: pins.gpio12.into_mode(),
+    //             green_neg: pins.gpio13.into_mode(),
+    //             blue_pos: pins.gpio14.into_mode(),
+    //             blue_neg: pins.gpio15.into_mode(),
+    //         },
+    //         DviClockPins {
+    //             clock_pos: pins.gpio8,
+    //             clock_neg: pins.gpio9,
+    //             pwm_slice: pwm_slices.pwm4,
+    //         },
+    //     )
+    // };
+
+    // Zach
+    let (data_pins, clock_pins) = {
+        (
+            DviDataPins {
+                red_pos: pins.gpio12.into_mode(),
+                red_neg: pins.gpio13.into_mode(),
+                green_pos: pins.gpio10.into_mode(),
+                green_neg: pins.gpio11.into_mode(),
+                blue_pos: pins.gpio16.into_mode(),
+                blue_neg: pins.gpio17.into_mode(),
+            },
+            DviClockPins {
+                clock_pos: pins.gpio14,
+                clock_neg: pins.gpio15,
+                pwm_slice: pwm_slices.pwm7,
+            },
+        )
+    };
+
     let mut serializer = DviSerializer::new(
         peripherals.PIO0,
         &mut peripherals.RESETS,
-        DviDataPins {
-            red_pos: pins.gpio10.into_mode(),
-            red_neg: pins.gpio11.into_mode(),
-            green_pos: pins.gpio12.into_mode(),
-            green_neg: pins.gpio13.into_mode(),
-            blue_pos: pins.gpio14.into_mode(),
-            blue_neg: pins.gpio15.into_mode(),
-        },
-        DviClockPins {
-            clock_pos: pins.gpio8,
-            clock_neg: pins.gpio9,
-            pwm_slice: pwm_slices.pwm4,
-        },
+        data_pins,
+        clock_pins,
     );
 
     let dma_channels = DmaChannels::new(
