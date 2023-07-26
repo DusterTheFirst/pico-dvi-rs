@@ -129,12 +129,15 @@ fn entry() -> ! {
     let (data_pins, clock_pins) = {
         (
             DviDataPins {
-                red_pos: pins.gpio12.into_mode(),
-                red_neg: pins.gpio13.into_mode(),
+                // 0
+                blue_pos: pins.gpio12.into_mode(),
+                blue_neg: pins.gpio13.into_mode(),
+                // 1
                 green_pos: pins.gpio10.into_mode(),
                 green_neg: pins.gpio11.into_mode(),
-                blue_pos: pins.gpio16.into_mode(),
-                blue_neg: pins.gpio17.into_mode(),
+                // 2
+                red_pos: pins.gpio16.into_mode(),
+                red_neg: pins.gpio17.into_mode(),
             },
             DviClockPins {
                 clock_pos: pins.gpio14,

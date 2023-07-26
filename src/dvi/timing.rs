@@ -210,7 +210,7 @@ fn get_ctrl_symbol(vsync: bool, hsync: bool) -> &'static TmdsPair {
 
 #[link_section = ".data"]
 static EMPTY_SCANLINE_TMDS: [TmdsPair; 3] = [
-    TmdsPair::encode_balanced_approx(0x00),
-    TmdsPair::encode_balanced_approx(0xfe),
-    TmdsPair::encode_balanced_approx(0x00),
+    TmdsPair::encode_balanced_approx(0xff), // Blue
+    TmdsPair::encode_balanced_approx(0xff), // Green
+    TmdsPair::encode_balanced_approx(0x00), // Red
 ];

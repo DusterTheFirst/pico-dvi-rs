@@ -166,26 +166,20 @@ where
         mut data_pins: DviDataPins<RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>,
         mut clock_pins: DviClockPins<SliceId, ClockPos, ClockNeg, Disabled<PullDown>>,
     ) -> Self {
-        let (mut pio, state_machine_red, state_machine_green, state_machine_blue, _) =
+        let (mut pio, state_machine_blue, state_machine_green, state_machine_red, _) =
             pio.split(resets);
 
         // 3 PIO state machines to drive 6 data lines
-        // 10 Red +
-        // 11 Red -
-        // 12 Green +
-        // 13 Green -
-        // 14 Blue +
-        // 15 Blue -
         let dvi_output_program = pio_proc::pio_file!("src/dvi_differential.pio");
 
         let installed_program = pio.install(&dvi_output_program.program).unwrap();
 
         // TODO: do not consume pins?
-        let (state_machine_red, tx_red) = Self::configure_state_machine::<RedPos, RedNeg, _>(
+        let (state_machine_blue, tx_blue) = Self::configure_state_machine::<BluePos, BlueNeg, _>(
             &installed_program,
-            state_machine_red,
-            &mut data_pins.red_pos,
-            &mut data_pins.red_neg,
+            state_machine_blue,
+            &mut data_pins.blue_pos,
+            &mut data_pins.blue_neg,
         );
 
         let (state_machine_green, tx_green) = Self::configure_state_machine::<GreenPos, GreenNeg, _>(
@@ -195,16 +189,14 @@ where
             &mut data_pins.green_neg,
         );
 
-        let (state_machine_blue, tx_blue) = Self::configure_state_machine::<BluePos, BlueNeg, _>(
+        let (state_machine_red, tx_red) = Self::configure_state_machine::<RedPos, RedNeg, _>(
             &installed_program,
-            state_machine_blue,
-            &mut data_pins.blue_pos,
-            &mut data_pins.blue_neg,
+            state_machine_red,
+            &mut data_pins.red_pos,
+            &mut data_pins.red_neg,
         );
 
-        // DVI clock driven by PWM4
-        // 8 CLK +
-        // 9 CLK -
+        // DVI clock driven
         let clock_pwm = &mut clock_pins.pwm_slice;
         clock_pwm.default_config();
         clock_pwm.set_top(9);
@@ -231,11 +223,11 @@ where
                 pwm_slice: clock_pins.pwm_slice,
             },
             state_machines: StateMachineState::Stopped(
-                state_machine_red
+                state_machine_blue
                     .with(state_machine_green)
-                    .with(state_machine_blue),
+                    .with(state_machine_red),
             ),
-            tx_fifo: (tx_red, tx_green, tx_blue),
+            tx_fifo: (tx_blue, tx_green, tx_red),
         }
     }
 
