@@ -28,17 +28,29 @@ pub struct DviTiming {
 }
 
 impl DviTiming {
-    fn n_lines_for_state(&self, state: DviTimingLineState) -> u32 {
-        match state {
-            DviTimingLineState::FrontPorch => self.v_front_porch,
-            DviTimingLineState::Sync => self.v_sync_width,
-            DviTimingLineState::BackPorch => self.v_back_porch,
-            DviTimingLineState::Active => self.v_active_lines,
-        }
-    }
-
     pub fn horizontal_words(&self) -> u32 {
         self.h_active_pixels / 2
+    }
+
+    fn total_lines(&self) -> u32 {
+        self.v_front_porch + self.v_sync_width + self.v_back_porch + self.v_active_lines
+    }
+
+    fn state_for_v_count(&self, v_count: u32) -> DviTimingLineState {
+        let mut y = v_count;
+        if y < self.v_front_porch {
+            return DviTimingLineState::FrontPorch;
+        }
+        y -= self.v_front_porch;
+        if y < self.v_sync_width {
+            return DviTimingLineState::Sync;
+        }
+        y -= self.v_sync_width;
+        if y < self.v_back_porch {
+            DviTimingLineState::BackPorch
+        } else {
+            DviTimingLineState::Active
+        }
     }
 }
 
@@ -61,20 +73,28 @@ pub const VGA_TIMING: DviTiming = DviTiming {
 #[derive(Default)]
 pub struct DviTimingState {
     v_ctr: u32,
-    v_state: DviTimingLineState,
 }
 
 impl DviTimingState {
     pub fn advance(&mut self, timing: &DviTiming) {
         self.v_ctr += 1;
-        if self.v_ctr == timing.n_lines_for_state(self.v_state) {
-            self.v_state = self.v_state.next();
+        if self.v_ctr == timing.total_lines() {
             self.v_ctr = 0;
         }
     }
 
-    pub fn v_state(&self) -> DviTimingLineState {
-        self.v_state
+    pub fn v_state(&self, timing: &DviTiming) -> DviTimingLineState {
+        timing.state_for_v_count(self.v_ctr)
+    }
+
+    pub fn v_scanline_index(&self, timing: &DviTiming, offset: u32) -> Option<u32> {
+        let inactive = timing.v_front_porch + timing.v_sync_width + timing.v_back_porch;
+        let y = (self.v_ctr + offset).checked_sub(inactive)?;
+        if y < timing.v_active_lines {
+            Some(y)
+        } else {
+            None
+        }
     }
 }
 
@@ -85,18 +105,6 @@ pub enum DviTimingLineState {
     Sync,
     BackPorch,
     Active,
-}
-
-impl DviTimingLineState {
-    fn next(self) -> Self {
-        use DviTimingLineState::*;
-        match self {
-            FrontPorch => Sync,
-            Sync => BackPorch,
-            BackPorch => Active,
-            Active => FrontPorch,
-        }
-    }
 }
 
 const DVI_SYNC_LANE_CHUNKS: usize = 4;
@@ -131,28 +139,36 @@ impl DviScanlineDmaList {
         timing: &DviTiming,
         dma_cfg: &DviLaneDmaCfg<Ch0, Ch1>,
         line_state: DviTimingLineState,
+        has_data: bool,
     ) where
         Ch0: SingleChannel,
         Ch1: SingleChannel,
     {
-        let vsync = if line_state == DviTimingLineState::Sync {
-            timing.v_sync_polarity
-        } else {
-            !timing.v_sync_polarity
-        };
-
+        let vsync = (line_state == DviTimingLineState::Sync) == timing.v_sync_polarity;
         let symbol_hsync_off = get_ctrl_symbol(vsync, !timing.h_sync_polarity);
         let symbol_hsync_on = get_ctrl_symbol(vsync, timing.h_sync_polarity);
-
         let lane = &mut self.l0;
-        lane[0].set(symbol_hsync_off, dma_cfg, timing.h_front_porch / 2, 2, false);
+        lane[0].set(
+            symbol_hsync_off,
+            dma_cfg,
+            timing.h_front_porch / 2,
+            2,
+            false,
+        );
         lane[1].set(symbol_hsync_on, dma_cfg, timing.h_sync_width / 2, 2, false);
         lane[2].set(symbol_hsync_off, dma_cfg, timing.h_back_porch / 2, 2, true);
+        let read_ring = if has_data { 0 } else { 2 };
         let symbol = match line_state {
             DviTimingLineState::Active => &EMPTY_SCANLINE_TMDS[0],
             _ => symbol_hsync_off,
         };
-        lane[3].set(symbol, dma_cfg, timing.h_active_pixels / 2, 2, false);
+        lane[3].set(
+            symbol,
+            dma_cfg,
+            timing.h_active_pixels / 2,
+            read_ring,
+            false,
+        );
     }
 
     fn setup_lane_12<Ch0, Ch1>(
@@ -161,6 +177,7 @@ impl DviScanlineDmaList {
         timing: &DviTiming,
         dma_cfg: &DviLaneDmaCfg<Ch0, Ch1>,
         line_state: DviTimingLineState,
+        has_data: bool,
     ) where
         Ch0: SingleChannel,
         Ch1: SingleChannel,
@@ -170,11 +187,12 @@ impl DviScanlineDmaList {
         let lane = self.lane_mut(lane_number);
         let inactive = timing.h_front_porch + timing.h_sync_width + timing.h_back_porch;
         lane[0].set(symbol_no_sync, dma_cfg, inactive / 2, 2, false);
+        let read_ring = if has_data { 0 } else { 2 };
         let sym = match line_state {
             DviTimingLineState::Active => &EMPTY_SCANLINE_TMDS[lane_number],
             _ => symbol_no_sync,
         };
-        lane[1].set(sym, dma_cfg, timing.h_active_pixels / 2, 2, false);
+        lane[1].set(sym, dma_cfg, timing.h_active_pixels / 2, read_ring, false);
     }
 
     pub fn setup_scanline<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>(
@@ -182,6 +200,7 @@ impl DviScanlineDmaList {
         t: &DviTiming,
         dma_cfg: &DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>,
         line_state: DviTimingLineState,
+        has_data: bool,
     ) where
         Ch0: SingleChannel,
         Ch1: SingleChannel,
@@ -190,9 +209,17 @@ impl DviScanlineDmaList {
         Ch4: SingleChannel,
         Ch5: SingleChannel,
     {
-        self.setup_lane_0(t, &dma_cfg.lane0, line_state);
-        self.setup_lane_12(1, t, &dma_cfg.lane1, line_state);
-        self.setup_lane_12(2, t, &dma_cfg.lane2, line_state);
+        self.setup_lane_0(t, &dma_cfg.lane0, line_state, has_data);
+        self.setup_lane_12(1, t, &dma_cfg.lane1, line_state, has_data);
+        self.setup_lane_12(2, t, &dma_cfg.lane2, line_state, has_data);
+    }
+
+    pub fn update_scanline(&mut self, buf: *const TmdsPair, stride: u32) {
+        unsafe {
+            self.l0[3].update_buf(buf);
+            self.l1[1].update_buf(buf.add(stride as usize));
+            self.l2[1].update_buf(buf.add(stride as usize * 2));
+        }
     }
 }
 

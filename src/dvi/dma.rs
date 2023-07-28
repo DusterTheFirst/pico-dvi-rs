@@ -157,7 +157,7 @@ pub struct DmaControlBlock {
 impl DmaControlBlock {
     pub fn set<T, Ch0, Ch1>(
         &mut self,
-        read_addr: &'static T,
+        read_addr: *const T,
         dma_cfg: &DviLaneDmaCfg<Ch0, Ch1>,
         transfer_count: u32,
         read_ring: u32,
@@ -166,8 +166,7 @@ impl DmaControlBlock {
         Ch0: SingleChannel,
         Ch1: SingleChannel,
     {
-        // Safety: read_addr is 'static, so the pointer should always be valid.
-        self.read_addr = read_addr as *const _ as u32;
+        self.read_addr = read_addr as u32;
         self.write_addr = dma_cfg.tx_fifo;
         self.transfer_count = transfer_count;
         self.config = DmaChannelConfig::default()
@@ -175,6 +174,10 @@ impl DmaControlBlock {
             .dreq(dma_cfg.dreq)
             .chain_to(dma_cfg.control_channel.id())
             .irq_quiet(!irq_on_finish);
+    }
+
+    pub fn update_buf<T>(&mut self, buf: *const T) {
+        self.read_addr = buf as u32;
     }
 }
 
