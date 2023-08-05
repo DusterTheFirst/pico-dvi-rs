@@ -5,7 +5,7 @@ use fugit::KilohertzU32;
 use rp_pico::hal::dma::SingleChannel;
 
 use super::{
-    dma::{DmaChannels, DmaControlBlock, DviLaneDmaCfg, DmaChannelList},
+    dma::{DmaChannelList, DmaChannels, DmaControlBlock, DviLaneDmaCfg},
     tmds::{TmdsPair, TmdsSymbol},
 };
 

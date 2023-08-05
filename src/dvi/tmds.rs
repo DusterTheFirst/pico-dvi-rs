@@ -22,8 +22,8 @@ impl TmdsSymbol {
     pub const C2: Self = TmdsSymbol(0x154);
     pub const C3: Self = TmdsSymbol(0x2ab);
 
-    pub const fn encode(discrepancy: i32, byte: u32) -> (i32, Self) {
-        let byte_ones = u8::count_ones(byte as _);
+    pub const fn encode(discrepancy: i32, byte: u8) -> (i32, Self) {
+        let byte_ones = byte.count_ones();
 
         // The first step of encoding TMDS data is to XOR/XNOR each input bit with the previous output bit, one by one
         //
@@ -34,7 +34,7 @@ impl TmdsSymbol {
         // To reduce the amount of steps, the carry-less multiplication with 255
         // can be split up into a multiplication with 3 * 5 * 17. The following
         // 3 lines respectively can be seen as those smaller multiplications.
-        let byte_mul = (byte << 1) ^ byte;
+        let byte_mul = ((byte as u32) << 1) ^ byte as u32;
         let byte_mul = (byte_mul << 2) ^ byte_mul;
         let byte_mul = (byte_mul << 4) ^ byte_mul;
         // We only care about the bottom byte
@@ -88,10 +88,14 @@ impl TmdsPair {
     ///
     /// This method takes advantage of the fact that two values differing
     /// only in the least significant bit add are DC balanced.
-    pub const fn encode_balanced_approx(byte: u32) -> Self {
+    pub const fn encode_balanced_approx(byte: u8) -> Self {
         let (discrepancy, symbol_0) = TmdsSymbol::encode(0, byte);
         let (_, symbol_1) = TmdsSymbol::encode(discrepancy, byte ^ 1);
         Self::new(symbol_0, symbol_1)
+    }
+
+    pub const fn raw(self) -> u32 {
+        self.0
     }
 }
 
