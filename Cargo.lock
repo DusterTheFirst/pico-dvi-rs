@@ -598,7 +598,6 @@ dependencies = [
  "bilge",
  "cortex-m",
  "cortex-m-rt",
- "critical-section",
  "defmt",
  "defmt-rtt",
  "defmt-test",

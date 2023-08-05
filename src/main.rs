@@ -3,14 +3,13 @@
 
 extern crate alloc;
 
-use core::{arch::global_asm, cell::RefCell};
+use core::{arch::global_asm, cell::UnsafeCell, mem::MaybeUninit};
 
-use critical_section::Mutex;
 use defmt_rtt as _;
 use embedded_alloc::Heap;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
-use cortex_m::delay::Delay;
+use cortex_m::{delay::Delay, peripheral::NVIC};
 use defmt::{dbg, info};
 use embedded_hal::digital::v2::ToggleableOutputPin;
 use rp_pico::{
@@ -22,7 +21,8 @@ use rp_pico::{
         watchdog::Watchdog,
         Clock,
     },
-    pac, Pins,
+    pac::{self, Interrupt},
+    Pins,
 };
 
 use crate::{
@@ -49,10 +49,9 @@ global_asm! {
     options(raw)
 }
 
-// TODO: iterate on this
-static DVI_INST: Mutex<
-    RefCell<
-        Option<
+struct DviInstWrapper(
+    UnsafeCell<
+        MaybeUninit<
             DviInst<
                 Channel<CH0>,
                 Channel<CH1>,
@@ -63,7 +62,15 @@ static DVI_INST: Mutex<
             >,
         >,
     >,
-> = Mutex::new(RefCell::new(None));
+);
+
+// Safety: access to the instance is indeed shared across threads,
+// as it is initialized in the main thread and the interrupt should
+// be modeled as another thread (and may be on a different core),
+// but only one has access at a time.
+unsafe impl Sync for DviInstWrapper {}
+
+static DVI_INST: DviInstWrapper = DviInstWrapper(UnsafeCell::new(MaybeUninit::uninit()));
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
 #[rp_pico::entry]
@@ -74,7 +81,6 @@ fn macro_entry() -> ! {
 fn entry() -> ! {
     info!("Program start");
     {
-        use core::mem::MaybeUninit;
         const HEAP_SIZE: usize = 64 * 1024;
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
         unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
@@ -181,13 +187,17 @@ fn entry() -> ! {
 
     let mut inst = DviInst::new(timing, dma_channels);
 
-    critical_section::with(|cs| {
-        inst.setup_dma();
-        inst.start();
-        serializer.wait_fifos_full();
-        serializer.enable();
-        DVI_INST.borrow(cs).replace(Some(inst));
-    });
+    inst.setup_dma();
+    inst.start();
+    // Safety: until interrupts are enabled, initialization is the only
+    // access to the instance. After interrupts are enabled, the interrupt
+    // handler is the only access to the instance.
+    unsafe {
+        *DVI_INST.0.get() = MaybeUninit::new(inst);
+        NVIC::unmask(Interrupt::DMA_IRQ_0);
+    }
+    serializer.wait_fifos_full();
+    serializer.enable();
 
     rom();
     ram();
