@@ -133,9 +133,9 @@ where
 
         // Invert pin outputs if in other order
         let output_override = if positive_id < negative_id {
-            OutputOverride::Invert
-        } else {
             OutputOverride::DontInvert
+        } else {
+            OutputOverride::Invert
         };
 
         let (mut state_machine, _, tx) = PIOBuilder::from_program(unsafe { program.share() })
