@@ -63,14 +63,13 @@ impl TmdsPair {
     }
 
     /// Encode two copies of a byte, approximating to achieve DC balance.
+    ///
+    /// This method takes advantage of the fact that two values differing
+    /// only in the least significant bit add are DC balanced.
     pub const fn encode_balanced_approx(byte: u32) -> Self {
         let (discrepancy, symbol_0) = TmdsSymbol::encode(0, byte);
-        if discrepancy == 0 {
-            Self::double(symbol_0)
-        } else {
-            let (_, symbol_1) = TmdsSymbol::encode(discrepancy, byte ^ 1);
-            Self::new(symbol_0, symbol_1)
-        }
+        let (_, symbol_1) = TmdsSymbol::encode(discrepancy, byte ^ 1);
+        Self::new(symbol_0, symbol_1)
     }
 }
 

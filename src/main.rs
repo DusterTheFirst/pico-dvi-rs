@@ -1,10 +1,13 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 use core::{arch::global_asm, cell::RefCell};
 
 use critical_section::Mutex;
 use defmt_rtt as _;
+use embedded_alloc::Heap;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
 use cortex_m::delay::Delay;
@@ -36,6 +39,10 @@ mod clock;
 mod dvi;
 //mod framebuffer;
 mod link;
+mod render;
+
+#[global_allocator]
+static HEAP: Heap = Heap::empty();
 
 global_asm! {
     include_str!("pre_init.asm"),
@@ -66,6 +73,12 @@ fn macro_entry() -> ! {
 
 fn entry() -> ! {
     info!("Program start");
+    {
+        use core::mem::MaybeUninit;
+        const HEAP_SIZE: usize = 64 * 1024;
+        static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
+        unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
+    }
 
     let mut peripherals = pac::Peripherals::take().unwrap();
     let core_peripherals = pac::CorePeripherals::take().unwrap();
