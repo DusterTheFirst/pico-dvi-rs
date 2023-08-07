@@ -153,19 +153,19 @@ where
 #[link_section = ".data"]
 #[interrupt]
 fn DMA_IRQ_0() {
-    critical_section::with(|cs| {
-        let mut guard = DVI_INST.borrow_ref_mut(cs);
-        let inst = guard.as_mut().unwrap();
-        let _ = inst.channels.check_int();
-        inst.timing_state.advance(&inst.timing);
-        // wait for all three channels to load their last op
-        inst.channels.wait_for_load(inst.timing.horizontal_words());
-        inst.update_scanline();
-        match inst.timing_state.v_state(&inst.timing) {
-            DviTimingLineState::Active => inst.channels.load_op(&inst.dma_list_active),
-            DviTimingLineState::Sync => inst.channels.load_op(&inst.dma_list_vblank_sync),
-            _ => inst.channels.load_op(&inst.dma_list_vblank_nosync),
-        }
-        inst.render();
-    })
+    // Safety: interrupts are enabled (and thus the interrupt handler is
+    // called) only after the instance has been initialized. After
+    // initialization, the interrupt handles has exclusive access.
+    let inst = unsafe { (*DVI_INST.0.get()).assume_init_mut() };
+    let _ = inst.channels.check_int();
+    inst.timing_state.advance(&inst.timing);
+    // wait for all three channels to load their last op
+    inst.channels.wait_for_load(inst.timing.horizontal_words());
+    inst.update_scanline();
+    match inst.timing_state.v_state(&inst.timing) {
+        DviTimingLineState::Active => inst.channels.load_op(&inst.dma_list_active),
+        DviTimingLineState::Sync => inst.channels.load_op(&inst.dma_list_vblank_sync),
+        _ => inst.channels.load_op(&inst.dma_list_vblank_nosync),
+    }
+    inst.render();
 }
