@@ -27,6 +27,7 @@ const PICO_PLL_VCO_MAX_FREQ: MegahertzU32 = MegahertzU32::MHz(1600);
 /// Determine PLL parameters for target frequency
 ///
 /// Logic is adapted from check_sys_clock_khz in pico-sdk
+#[doc(alias = "check_sys_clock_khz", alias = "vcocalc")]
 fn configure_sys_clock(requested_freq: KilohertzU32) -> Option<ClockCfg> {
     let crystal_freq: KilohertzU32 = XOSC_CRYSTAL_FREQ.Hz();
 
