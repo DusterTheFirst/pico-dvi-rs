@@ -5,10 +5,11 @@ extern crate alloc;
 
 use core::{arch::global_asm, cell::UnsafeCell, mem::MaybeUninit};
 
+use alloc::format;
 use defmt_rtt as _;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
-use cortex_m::{delay::Delay, peripheral::NVIC};
+use cortex_m::peripheral::NVIC;
 use defmt::{dbg, info};
 use dvi::dma::DmaChannelList;
 use embedded_alloc::Heap;
@@ -17,22 +18,29 @@ use rp_pico::{
     hal::{
         dma::{Channel, DMAExt, CH0, CH1, CH2, CH3, CH4, CH5},
         gpio::PinState,
+        multicore::{Multicore, Stack},
         pwm,
-        sio::Sio,
+        sio::{Sio, SioFifo},
         watchdog::Watchdog,
-        Clock,
     },
-    pac::{self, Interrupt},
+    pac::{self, interrupt},
     Pins,
 };
+
+use pac::Interrupt;
 
 use crate::{
     clock::init_clocks,
     dvi::{
+        core1_main,
         dma::DmaChannels,
         serializer::{DviClockPins, DviDataPins, DviSerializer},
         timing::VGA_TIMING,
-        DviInst,
+        DviInst, VERTICAL_REPEAT,
+    },
+    render::{
+        end_display_list, init_display_swapcell, render_line, rgb, start_display_list, BW_PALETTE,
+        FONT_HEIGHT,
     },
 };
 
@@ -66,9 +74,16 @@ struct DviInstWrapper(UnsafeCell<MaybeUninit<DviInst<DviChannels>>>);
 // as it is initialized in the main thread and the interrupt should
 // be modeled as another thread (and may be on a different core),
 // but only one has access at a time.
+//
+// Note: this is annoying, `static mut` is more ergonomic (but less
+// precise). When `SyncUnsafeCell` is stabilized, use that instead.
 unsafe impl Sync for DviInstWrapper {}
 
 static DVI_INST: DviInstWrapper = DviInstWrapper(UnsafeCell::new(MaybeUninit::uninit()));
+
+static mut CORE1_STACK: Stack<256> = Stack::new();
+
+static mut FIFO: MaybeUninit<SioFifo> = MaybeUninit::uninit();
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
 #[rp_pico::entry]
@@ -85,7 +100,7 @@ fn entry() -> ! {
     }
 
     let mut peripherals = pac::Peripherals::take().unwrap();
-    let core_peripherals = pac::CorePeripherals::take().unwrap();
+    //let core_peripherals = pac::CorePeripherals::take().unwrap();
 
     sysinfo(&peripherals.SYSINFO);
 
@@ -95,7 +110,7 @@ fn entry() -> ! {
     let timing = VGA_TIMING;
 
     // External high-speed crystal on the pico board is 12Mhz
-    let clocks = init_clocks(
+    let _clocks = init_clocks(
         peripherals.XOSC,
         peripherals.ROSC,
         peripherals.CLOCKS,
@@ -114,11 +129,6 @@ fn entry() -> ! {
     );
 
     let mut led_pin = pins.led.into_push_pull_output_in_state(PinState::Low);
-
-    let mut delay = Delay::new(
-        core_peripherals.SYST,
-        dbg!(clocks.system_clock.freq().to_Hz()),
-    );
 
     let pwm_slices = pwm::Slices::new(peripherals.PWM, &mut peripherals.RESETS);
     let dma = peripherals.DMA.split(&mut peripherals.RESETS);
@@ -144,7 +154,7 @@ fn entry() -> ! {
         )
     };
 
-    let mut serializer = DviSerializer::new(
+    let serializer = DviSerializer::new(
         peripherals.PIO0,
         &mut peripherals.RESETS,
         data_pins,
@@ -159,29 +169,79 @@ fn entry() -> ! {
     {
         // Safety: the DMA_IRQ_0 handler is not enabled yet. We have exclusive access to this static.
         let inst = unsafe { (*DVI_INST.0.get()).write(DviInst::new(timing, dma_channels)) };
-
         inst.setup_dma();
         inst.start();
     }
-    // Safety: we pass ownership of DVI_INST to the DMA_IRQ_0 handler.
-    // For this to be safe, no references to DVI_INST can be used after this unmask
+    let mut fifo = single_cycle_io.fifo;
+    let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
+    let cores = mc.cores();
+    let core1 = &mut cores[1];
+    core1
+        .spawn(unsafe { &mut CORE1_STACK.mem }, move || {
+            core1_main(serializer)
+        })
+        .unwrap();
+    // Safety: enable interrupt for fifo to receive line render requests.
+    // Transfer ownership of this end of the fifo to the interrupt handler.
     unsafe {
-        NVIC::unmask(Interrupt::DMA_IRQ_0);
+        FIFO = MaybeUninit::new(fifo);
+        NVIC::unmask(Interrupt::SIO_IRQ_PROC0);
     }
-    serializer.wait_fifos_full();
-    serializer.enable();
+    init_display_swapcell();
 
     rom();
     ram();
     ram_x();
     ram_y();
 
-    //unsafe { dbg!(&framebuffer::FRAMEBUFFER_16BPP as *const _) };
-    //unsafe { dbg!(&framebuffer::FRAMEBUFFER_8BPP as *const _) };
-
+    let mut count = 0u32;
     loop {
-        led_pin.toggle().unwrap();
-        delay.delay_ms(250);
+        if count % 15 == 0 {
+            led_pin.toggle().unwrap();
+        }
+        count = count.wrapping_add(1);
+        let (mut rb, mut sb) = start_display_list();
+        let height = 480 / VERTICAL_REPEAT as u32;
+        rb.begin_stripe(height - FONT_HEIGHT);
+        rb.end_stripe();
+        sb.begin_stripe(320 / VERTICAL_REPEAT as u32);
+        sb.solid(92, rgb(0xc0, 0xc0, 0xc0));
+        sb.solid(90, rgb(0xc0, 0xc0, 0));
+        sb.solid(92, rgb(0, 0xc0, 0xc0));
+        sb.solid(92, rgb(0, 0xc0, 0x0));
+        sb.solid(92, rgb(0xc0, 0, 0xc0));
+        sb.solid(90, rgb(0xc0, 0, 0));
+        sb.solid(92, rgb(0, 0, 0xc0));
+        sb.end_stripe();
+        sb.begin_stripe(40 / VERTICAL_REPEAT as u32);
+        sb.solid(92, rgb(0, 0, 0xc0));
+        sb.solid(90, rgb(0x13, 0x13, 0x13));
+        sb.solid(92, rgb(0xc0, 0, 0xc0));
+        sb.solid(92, rgb(0x13, 0x13, 0x13));
+        sb.solid(92, rgb(0, 0xc0, 0xc0));
+        sb.solid(90, rgb(0x13, 0x13, 0x13));
+        sb.solid(92, rgb(0xc0, 0xc0, 0xc0));
+        sb.end_stripe();
+        sb.begin_stripe(120 / VERTICAL_REPEAT as u32 - FONT_HEIGHT);
+        sb.solid(114, rgb(0, 0x21, 0x4c));
+        sb.solid(114, rgb(0xff, 0xff, 0xff));
+        sb.solid(114, rgb(0x32, 0, 0x6a));
+        sb.solid(116, rgb(0x13, 0x13, 0x13));
+        sb.solid(30, rgb(0x09, 0x09, 0x09));
+        sb.solid(30, rgb(0x13, 0x13, 0x13));
+        sb.solid(30, rgb(0x1d, 0x1d, 0x1d));
+        sb.solid(92, rgb(0x13, 0x13, 0x13));
+        sb.end_stripe();
+        rb.begin_stripe(FONT_HEIGHT);
+        let text = format!("Hello pico-dvi-rs, frame {count}");
+        let width = rb.text(&text);
+        let width = width + width % 2;
+        rb.end_stripe();
+        sb.begin_stripe(FONT_HEIGHT);
+        sb.pal_1bpp(width, &BW_PALETTE);
+        sb.solid(640 - width, rgb(0, 0, 0));
+        sb.end_stripe();
+        end_display_list(rb, sb);
     }
 }
 
@@ -228,4 +288,17 @@ fn ram_x() {
 #[link_section = link!(scratch y, ram_y)]
 fn ram_y() {
     dbg!(ram_y as fn() as *const ());
+}
+
+#[link_section = ".data"]
+#[interrupt]
+fn SIO_IRQ_PROC0() {
+    // Safety: this interrupt handler has exclusive access to this
+    // end of the fifo.
+    let fifo = unsafe { FIFO.assume_init_mut() };
+    while let Some(line_ix) = fifo.read() {
+        // Safety: exclusive access to the line buffer is granted
+        // when the render is scheduled to a core.
+        unsafe { render_line(line_ix) };
+    }
 }

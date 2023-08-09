@@ -84,14 +84,22 @@ impl TmdsPair {
         Self::new(symbol, symbol)
     }
 
+    /// Encode a pair of bytes.
+    ///
+    /// This is not guaranteed to be DC balanced unless the bytes are
+    /// carefully chosen.
+    pub const fn encode_pair(b0: u8, b1: u8) -> Self {
+        let (discrepancy, symbol_0) = TmdsSymbol::encode(0, b0);
+        let (_, symbol_1) = TmdsSymbol::encode(discrepancy, b1);
+        Self::new(symbol_0, symbol_1)
+    }
+
     /// Encode two copies of a byte, approximating to achieve DC balance.
     ///
     /// This method takes advantage of the fact that two values differing
     /// only in the least significant bit add are DC balanced.
     pub const fn encode_balanced_approx(byte: u8) -> Self {
-        let (discrepancy, symbol_0) = TmdsSymbol::encode(0, byte);
-        let (_, symbol_1) = TmdsSymbol::encode(discrepancy, byte ^ 1);
-        Self::new(symbol_0, symbol_1)
+        Self::encode_pair(byte, byte ^ 1)
     }
 
     pub const fn raw(self) -> u32 {

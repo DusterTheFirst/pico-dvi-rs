@@ -4,11 +4,23 @@ pub mod timing;
 pub mod tmds;
 
 use alloc::boxed::Box;
+use cortex_m::peripheral::NVIC;
+use rp_pico::hal::{
+    gpio::{bank0, PinId},
+    pac::Interrupt,
+    pio,
+    pwm::{self, ValidPwmOutputPin},
+};
 
-use crate::{pac::interrupt, render::ScanRender, DVI_INST};
+use crate::{
+    pac::interrupt,
+    render::{render_line, ScanRender, CORE1_QUEUE, N_LINE_BUFS},
+    DVI_INST,
+};
 
 use self::{
     dma::{DmaChannelList, DmaChannels},
+    serializer::DviSerializer,
     timing::{DviScanlineDmaList, DviTiming, DviTimingLineState, DviTimingState},
     tmds::TmdsPair,
 };
@@ -49,6 +61,7 @@ pub struct DviInst<Channels: DmaChannelList> {
     dma_list_error: DviScanlineDmaList,
 
     tmds_buf: Box<[TmdsPair]>,
+    available: [bool; N_TMDS_BUFFERS],
     scan_render: ScanRender,
 }
 
@@ -65,6 +78,7 @@ impl<Channels: DmaChannelList> DviInst<Channels> {
             dma_list_active: Default::default(),
             dma_list_error: Default::default(),
             tmds_buf: buf.into(),
+            available: [false; N_TMDS_BUFFERS],
             scan_render: ScanRender::new(),
         }
     }
@@ -102,36 +116,124 @@ impl<Channels: DmaChannelList> DviInst<Channels> {
         self.channels.start();
     }
 
+    /// Determine whether a line is available to scan into TMDS.
+    ///
+    /// If a TMDS render is to be scheduled this scanline, return the
+    /// scanline number and a boolean indicating whether the line buffer
+    /// is available.
+    ///
+    /// If no TMDS render is to be scheduled, the scanline number is
+    /// `!0`.
+    ///
+    /// This method also updates the `available` table internally.
     #[link_section = ".data"]
-    fn update_scanline(&mut self) {
-        if let Some(y) = self.timing_state.v_scanline_index(&self.timing, 0) {
-            let buf_ix = (y as usize / VERTICAL_REPEAT) % N_TMDS_BUFFERS;
-            let stride = self.timing.horizontal_words() as usize * N_CHANNELS * buf_ix;
-            let buf = unsafe { self.tmds_buf.as_ptr().add(stride) };
-            let channel_stride = if N_CHANNELS == 1 {
-                0
-            } else {
-                self.timing.horizontal_words()
-            };
-            self.dma_list_active.update_scanline(buf, channel_stride);
-        }
-    }
-
-    #[link_section = ".data"]
-    fn render(&mut self) {
+    fn line_available(&mut self) -> (u32, bool) {
         if let Some(y) = self
             .timing_state
             .v_scanline_index(&self.timing, TMDS_PIPELINE_SLACK)
         {
             if y % VERTICAL_REPEAT as u32 == 0 {
                 let y = y / VERTICAL_REPEAT as u32;
+                let available = self.scan_render.is_line_available(y);
                 let buf_ix = y as usize % N_TMDS_BUFFERS;
-                let line_size = self.timing.horizontal_words() as usize * N_CHANNELS;
-                let line_start = line_size * buf_ix;
-                let tmds_slice = &mut self.tmds_buf[line_start..][..line_size];
-                self.scan_render.render_scanline(tmds_slice, y);
+                self.available[buf_ix] = available;
+                return (y, available);
             }
         }
+        (!0, false)
+    }
+
+    /// Update the DMA read address to point to the TMDS scanline.
+    ///
+    /// Returns true if an active scanline is available.
+    #[link_section = ".data"]
+    fn update_scanline(&mut self) -> bool {
+        if let Some(y) = self.timing_state.v_scanline_index(&self.timing, 0) {
+            let buf_ix = (y as usize / VERTICAL_REPEAT) % N_TMDS_BUFFERS;
+            if self.available[buf_ix] {
+                let stride = self.timing.horizontal_words() as usize * N_CHANNELS * buf_ix;
+                let buf = unsafe { self.tmds_buf.as_ptr().add(stride) };
+                let channel_stride = if N_CHANNELS == 1 {
+                    0
+                } else {
+                    self.timing.horizontal_words()
+                };
+                self.dma_list_active.update_scanline(buf, channel_stride);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Render a scanline into a TMDS buffer.
+    ///
+    /// This function is called even if the corresponding line buffer is not
+    /// available, so the display list can be advanced.
+    #[link_section = ".data"]
+    fn render(&mut self, y: u32, available: bool) {
+        let buf_ix = y as usize % N_TMDS_BUFFERS;
+        let line_size = self.timing.horizontal_words() as usize * N_CHANNELS;
+        let line_start = line_size * buf_ix;
+        let tmds_slice = &mut self.tmds_buf[line_start..][..line_size];
+        self.scan_render.render_scanline(tmds_slice, y, available);
+    }
+
+    /// Schedule the rendering of a line buffer.
+    ///
+    /// The line buffers are rendered outside the main interrupt handler,
+    /// striped across both cores.
+    #[link_section = ".data"]
+    fn schedule_line_render(&mut self) {
+        let offset = TMDS_PIPELINE_SLACK + (N_LINE_BUFS * VERTICAL_REPEAT) as u32;
+        if let Some(y) = self.timing_state.v_scanline_index(&self.timing, offset) {
+            if y % VERTICAL_REPEAT as u32 == 0 {
+                let y = y / VERTICAL_REPEAT as u32;
+                self.scan_render.schedule_line_render(y);
+            }
+        }
+    }
+}
+
+/// We dedicate core 1 to running the primary video interrupt and also
+/// background rendering tasks.
+#[link_section = ".data"]
+pub fn core1_main<PIO, SliceId, Pos, Neg, RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>(
+    mut serializer: DviSerializer<
+        PIO,
+        SliceId,
+        Pos,
+        Neg,
+        RedPos,
+        RedNeg,
+        GreenPos,
+        GreenNeg,
+        BluePos,
+        BlueNeg,
+    >,
+) -> !
+where
+    PIO: pio::PIOExt,
+    SliceId: pwm::SliceId,
+    Pos: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::A>,
+    Neg: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::B>,
+    RedPos: PinId + bank0::BankPinId,
+    RedNeg: PinId + bank0::BankPinId,
+    GreenPos: PinId + bank0::BankPinId,
+    GreenNeg: PinId + bank0::BankPinId,
+    BluePos: PinId + bank0::BankPinId,
+    BlueNeg: PinId + bank0::BankPinId,
+{
+    unsafe {
+        NVIC::unmask(Interrupt::DMA_IRQ_0);
+    }
+    serializer.wait_fifos_full();
+    serializer.enable();
+    loop {
+        let line_ix = CORE1_QUEUE.peek_blocking();
+        // Safety: exclusive access to the line buffer is granted
+        // when the render is scheduled to a core.
+        unsafe { render_line(line_ix) };
+        CORE1_QUEUE.remove();
     }
 }
 
@@ -144,13 +246,20 @@ fn DMA_IRQ_0() {
     let inst = unsafe { (*DVI_INST.0.get()).assume_init_mut() };
     let _ = inst.channels.check_int();
     inst.timing_state.advance(&inst.timing);
+    let (y, available) = inst.line_available();
     // wait for all three channels to load their last op
     inst.channels.wait_for_load(inst.timing.horizontal_words());
-    inst.update_scanline();
-    match inst.timing_state.v_state(&inst.timing) {
-        DviTimingLineState::Active => inst.channels.load_op(&inst.dma_list_active),
-        DviTimingLineState::Sync => inst.channels.load_op(&inst.dma_list_vblank_sync),
-        _ => inst.channels.load_op(&inst.dma_list_vblank_nosync),
+    if inst.update_scanline() {
+        inst.channels.load_op(&inst.dma_list_active);
+    } else {
+        match inst.timing_state.v_state(&inst.timing) {
+            DviTimingLineState::Active => inst.channels.load_op(&inst.dma_list_error),
+            DviTimingLineState::Sync => inst.channels.load_op(&inst.dma_list_vblank_sync),
+            _ => inst.channels.load_op(&inst.dma_list_vblank_nosync),
+        }
     }
-    inst.render();
+    if y < 0x8000_0000 {
+        inst.render(y, available);
+    }
+    inst.schedule_line_render();
 }
