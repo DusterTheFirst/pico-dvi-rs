@@ -23,33 +23,55 @@ impl TmdsSymbol {
     pub const C3: Self = TmdsSymbol(0x2ab);
 
     pub const fn encode(discrepancy: i32, byte: u32) -> (i32, Self) {
-        let byte_ones = u8::count_ones(byte as u8);
-        let a = (byte << 1) ^ byte;
-        let b = (a << 2) ^ a;
-        let mut c = ((b << 4) ^ b) & 0xff;
+        let byte_ones = u8::count_ones(byte as _);
 
-        if byte_ones > 4 || (byte_ones == 4 && (c & 1) == 0) {
-            c ^= 0xaa;
+        // The first step of encoding TMDS data is to XOR/XNOR each input bit with the previous output bit, one by one
+        //
+        // Instead using a for loop over each bit, TMDS encoding can be approached
+        // as a carry-less multiplication with 255. The decoding step would be a
+        // carry-less multiplication with 3.
+        //
+        // To reduce the amount of steps, the carry-less multiplication with 255
+        // can be split up into a multiplication with 3 * 5 * 17. The following
+        // 3 lines respectively can be seen as those smaller multiplications.
+        let byte_mul = (byte << 1) ^ byte;
+        let byte_mul = (byte_mul << 2) ^ byte_mul;
+        let byte_mul = (byte_mul << 4) ^ byte_mul;
+        // We only care about the bottom byte
+        let mut byte_encoded = byte_mul & 0xff;
+
+        let should_xnor = byte_ones > 4 || (byte_ones == 4 && (byte_encoded & 1) == 0);
+
+        if should_xnor {
+            // Convert the XOR case to the XNOR case, toggling every other bit
+            byte_encoded ^= 0xaa
         } else {
-            c ^= 0x100;
-        }
-
-        let mut c_ones = u8::count_ones(c as u8);
-
-        let invert = if discrepancy == 0 || c_ones == 4 {
-            (c >> 8) == 0
-        } else {
-            (discrepancy > 0) == (c_ones > 4)
+            // Set bit 8 to indicate XOR
+            byte_encoded ^= 0x100
         };
 
-        if invert {
-            c ^= 0x2ff;
-            c_ones = 9 - c_ones;
-        }
+        let encoded_ones = u8::count_ones(byte_encoded as _);
 
-        c_ones += (c >> 8) & 1;
+        let should_invert = if discrepancy == 0 || encoded_ones == 4 {
+            (byte_encoded >> 8) == 0
+        } else {
+            (discrepancy > 0) == (encoded_ones > 4)
+        };
 
-        (discrepancy + (c_ones as i32 - 5), TmdsSymbol(c))
+        let bit_8 = (byte_encoded >> 8) & 1;
+        let symbol_ones = if should_invert {
+            // Invert the lower byte and set bit 9
+            byte_encoded ^= 0x2ff;
+
+            // Invert the ones count of the lower 8 bits, add bit 8 and bit 9
+            (8 - encoded_ones) + bit_8 + 1
+        } else {
+            encoded_ones + bit_8
+        };
+
+        let discrepancy = discrepancy + (symbol_ones as i32 - 5);
+
+        (discrepancy, TmdsSymbol(byte_encoded))
     }
 }
 
