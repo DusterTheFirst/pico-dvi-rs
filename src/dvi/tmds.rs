@@ -39,36 +39,38 @@ impl TmdsSymbol {
         let byte_mul = (byte_mul << 4) ^ byte_mul;
         // We only care about the bottom byte
         let mut byte_encoded = byte_mul & 0xff;
-    
+
         let should_xnor = byte_ones > 4 || (byte_ones == 4 && (byte_encoded & 1) == 0);
-    
+
         if should_xnor {
             // Convert the XOR case to the XNOR case, toggling every other bit
             byte_encoded ^= 0xaa
         } else {
-            // Set the high bit to indicate XOR
+            // Set bit 8 to indicate XOR
             byte_encoded ^= 0x100
         };
-    
-        let mut byte_encoded_ones = u8::count_ones(byte_encoded as _);
-    
-        let should_invert = if discrepancy == 0 || byte_encoded_ones == 4 {
+
+        let encoded_ones = u8::count_ones(byte_encoded as _);
+
+        let should_invert = if discrepancy == 0 || encoded_ones == 4 {
             (byte_encoded >> 8) == 0
         } else {
-            (discrepancy > 0) == (byte_encoded_ones > 4)
+            (discrepancy > 0) == (encoded_ones > 4)
         };
-    
-        if should_invert {
-            // Invert the lower byte and set the 10th bit
+
+        let bit_8 = (byte_encoded >> 8) & 1;
+        let symbol_ones = if should_invert {
+            // Invert the lower byte and set bit 9
             byte_encoded ^= 0x2ff;
-            byte_encoded_ones = 9 - byte_encoded_ones;
-        }
-    
-        // Add the 9th bit to the ones count
-        byte_encoded_ones += (byte_encoded >> 8) & 1;
-    
-        let discrepancy = discrepancy + (byte_encoded_ones as i32 - 5);
-    
+
+            // Invert the ones count of the lower 8 bits, add bit 8 and bit 9
+            (8 - encoded_ones) + bit_8 + 1
+        } else {
+            encoded_ones + bit_8
+        };
+
+        let discrepancy = discrepancy + (symbol_ones as i32 - 5);
+
         (discrepancy, TmdsSymbol(byte_encoded))
     }
 }
