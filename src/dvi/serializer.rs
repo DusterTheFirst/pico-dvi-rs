@@ -262,6 +262,6 @@ where
 
 fn wait_fifo_full<SM: ValidStateMachine>(fifo: &Tx<SM>) {
     while !fifo.is_full() {
-        // tight_loop_contents()
+        core::hint::spin_loop()
     }
 }

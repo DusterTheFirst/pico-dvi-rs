@@ -56,7 +56,7 @@ where
             // CH{id}_DBG_TCR register, not exposed by HAL
             let tcr = (0x5000_0804 + 0x40 * self.data_channel.id() as u32) as *mut u32;
             while tcr.read_volatile() != n_words {
-                // tight_loop_contents()
+                core::hint::spin_loop()
             }
         }
     }
