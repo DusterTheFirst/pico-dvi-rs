@@ -38,7 +38,6 @@ use crate::{
 
 mod clock;
 mod dvi;
-//mod framebuffer;
 mod link;
 mod render;
 
