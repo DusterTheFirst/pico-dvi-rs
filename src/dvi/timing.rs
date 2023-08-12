@@ -5,7 +5,7 @@ use fugit::KilohertzU32;
 use rp_pico::hal::dma::SingleChannel;
 
 use super::{
-    dma::{DmaChannels, DmaControlBlock, DviLaneDmaCfg},
+    dma::{DmaChannels, DmaControlBlock, DviLaneDmaCfg, DmaChannelList},
     tmds::{TmdsPair, TmdsSymbol},
 };
 
@@ -195,20 +195,13 @@ impl DviScanlineDmaList {
         lane[1].set(sym, dma_cfg, timing.h_active_pixels / 2, read_ring, false);
     }
 
-    pub fn setup_scanline<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>(
+    pub fn setup_scanline<Channels: DmaChannelList>(
         &mut self,
         t: &DviTiming,
-        dma_cfg: &DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>,
+        dma_cfg: &DmaChannels<Channels>,
         line_state: DviTimingLineState,
         has_data: bool,
-    ) where
-        Ch0: SingleChannel,
-        Ch1: SingleChannel,
-        Ch2: SingleChannel,
-        Ch3: SingleChannel,
-        Ch4: SingleChannel,
-        Ch5: SingleChannel,
-    {
+    ) {
         self.setup_lane_0(t, &dma_cfg.lane0, line_state, has_data);
         self.setup_lane_12(1, t, &dma_cfg.lane1, line_state, has_data);
         self.setup_lane_12(2, t, &dma_cfg.lane2, line_state, has_data);

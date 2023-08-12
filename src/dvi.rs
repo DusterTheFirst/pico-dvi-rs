@@ -4,12 +4,11 @@ pub mod timing;
 pub mod tmds;
 
 use alloc::boxed::Box;
-use rp_pico::hal::dma::SingleChannel;
 
 use crate::{pac::interrupt, DVI_INST};
 
 use self::{
-    dma::DmaChannels,
+    dma::{DmaChannelList, DmaChannels},
     timing::{DviScanlineDmaList, DviTiming, DviTimingLineState, DviTimingState},
     tmds::TmdsPair,
 };
@@ -39,18 +38,10 @@ const N_TMDS_BUFFERS: usize = if TMDS_PIPELINE_SLACK > 0 && VERTICAL_REPEAT == 1
 /// This struct corresponds reasonably closely to `struct dvi_inst` in the
 /// PicoDVI source, but with the focused role of holding state needing to
 /// be accessed by the interrupt handler.
-pub struct DviInst<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>
-where
-    Ch0: SingleChannel,
-    Ch1: SingleChannel,
-    Ch2: SingleChannel,
-    Ch3: SingleChannel,
-    Ch4: SingleChannel,
-    Ch5: SingleChannel,
-{
+pub struct DviInst<Channels: DmaChannelList> {
     timing: DviTiming,
     timing_state: DviTimingState,
-    channels: DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>,
+    channels: DmaChannels<Channels>,
 
     dma_list_vblank_sync: DviScanlineDmaList,
     dma_list_vblank_nosync: DviScanlineDmaList,
@@ -60,16 +51,8 @@ where
     tmds_buf: Box<[TmdsPair]>,
 }
 
-impl<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5> DviInst<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>
-where
-    Ch0: SingleChannel,
-    Ch1: SingleChannel,
-    Ch2: SingleChannel,
-    Ch3: SingleChannel,
-    Ch4: SingleChannel,
-    Ch5: SingleChannel,
-{
-    pub fn new(timing: DviTiming, channels: DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>) -> Self {
+impl<Channels: DmaChannelList> DviInst<Channels> {
+    pub fn new(timing: DviTiming, channels: DmaChannels<Channels>) -> Self {
         let buf_size = timing.horizontal_words() as usize * N_CHANNELS * N_TMDS_BUFFERS;
         let buf = alloc::vec![TmdsPair::encode_balanced_approx(0); buf_size];
         DviInst {

@@ -6,6 +6,7 @@ extern crate alloc;
 use core::{arch::global_asm, cell::UnsafeCell, mem::MaybeUninit};
 
 use defmt_rtt as _;
+use dvi::dma::DmaChannelList;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
 use cortex_m::{delay::Delay, peripheral::NVIC};
@@ -49,20 +50,17 @@ global_asm! {
     options(raw)
 }
 
-struct DviInstWrapper(
-    UnsafeCell<
-        MaybeUninit<
-            DviInst<
-                Channel<CH0>,
-                Channel<CH1>,
-                Channel<CH2>,
-                Channel<CH3>,
-                Channel<CH4>,
-                Channel<CH5>,
-            >,
-        >,
-    >,
-);
+struct DviChannels;
+impl DmaChannelList for DviChannels {
+    type Ch0 = Channel<CH0>;
+    type Ch1 = Channel<CH1>;
+    type Ch2 = Channel<CH2>;
+    type Ch3 = Channel<CH3>;
+    type Ch4 = Channel<CH4>;
+    type Ch5 = Channel<CH5>;
+}
+
+struct DviInstWrapper(UnsafeCell<MaybeUninit<DviInst<DviChannels>>>);
 
 // Safety: access to the instance is indeed shared across threads,
 // as it is initialized in the main thread and the interrupt should
@@ -154,15 +152,8 @@ fn entry() -> ! {
     );
 
     let dma_channels = DmaChannels::new(
-        dma.ch0,
-        dma.ch1,
-        dma.ch2,
-        dma.ch3,
-        dma.ch4,
-        dma.ch5,
-        serializer.tx0(),
-        serializer.tx1(),
-        serializer.tx2(),
+        (dma.ch0, dma.ch1, dma.ch2, dma.ch3, dma.ch4, dma.ch5),
+        serializer.tx(),
     );
 
     let mut inst = DviInst::new(timing, dma_channels);

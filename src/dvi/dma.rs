@@ -62,44 +62,41 @@ where
     }
 }
 
-pub struct DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>
-where
-    Ch0: SingleChannel,
-    Ch1: SingleChannel,
-    Ch2: SingleChannel,
-    Ch3: SingleChannel,
-    Ch4: SingleChannel,
-    Ch5: SingleChannel,
-{
-    pub lane0: DviLaneDmaCfg<Ch0, Ch1>,
-    pub lane1: DviLaneDmaCfg<Ch2, Ch3>,
-    pub lane2: DviLaneDmaCfg<Ch4, Ch5>,
+// 6 free DMA channels for use by the DVI system
+//
+// Implement this marker trait on a zero-sized type
+// to simplify passing all 6 DMA channels to DMA types.
+pub trait DmaChannelList {
+    type Ch0: SingleChannel;
+    type Ch1: SingleChannel;
+    type Ch2: SingleChannel;
+    type Ch3: SingleChannel;
+    type Ch4: SingleChannel;
+    type Ch5: SingleChannel;
 }
 
-impl<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5> DmaChannels<Ch0, Ch1, Ch2, Ch3, Ch4, Ch5>
-where
-    Ch0: SingleChannel,
-    Ch1: SingleChannel,
-    Ch2: SingleChannel,
-    Ch3: SingleChannel,
-    Ch4: SingleChannel,
-    Ch5: SingleChannel,
-{
+pub struct DmaChannels<Channels: DmaChannelList> {
+    pub lane0: DviLaneDmaCfg<Channels::Ch0, Channels::Ch1>,
+    pub lane1: DviLaneDmaCfg<Channels::Ch2, Channels::Ch3>,
+    pub lane2: DviLaneDmaCfg<Channels::Ch4, Channels::Ch5>,
+}
+
+impl<Channels: DmaChannelList> DmaChannels<Channels> {
     pub fn new<SM0: ValidStateMachine, SM1: ValidStateMachine, SM2: ValidStateMachine>(
-        ch0: Ch0,
-        ch1: Ch1,
-        ch2: Ch2,
-        ch3: Ch3,
-        ch4: Ch4,
-        ch5: Ch5,
-        tx0: &Tx<SM0>,
-        tx1: &Tx<SM1>,
-        tx2: &Tx<SM2>,
+        channels: (
+            Channels::Ch0,
+            Channels::Ch1,
+            Channels::Ch2,
+            Channels::Ch3,
+            Channels::Ch4,
+            Channels::Ch5,
+        ),
+        serializer_tx: (&Tx<SM0>, &Tx<SM1>, &Tx<SM2>),
     ) -> Self {
         DmaChannels {
-            lane0: DviLaneDmaCfg::new(ch0, ch1, tx0),
-            lane1: DviLaneDmaCfg::new(ch2, ch3, tx1),
-            lane2: DviLaneDmaCfg::new(ch4, ch5, tx2),
+            lane0: DviLaneDmaCfg::new(channels.0, channels.1, serializer_tx.0),
+            lane1: DviLaneDmaCfg::new(channels.2, channels.3, serializer_tx.1),
+            lane2: DviLaneDmaCfg::new(channels.4, channels.5, serializer_tx.2),
         }
     }
 

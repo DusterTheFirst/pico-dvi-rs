@@ -231,22 +231,20 @@ where
         }
     }
 
-    pub fn tx0(&self) -> &Tx<(PIO, pio::SM0)> {
-        &self.tx_fifo.0
-    }
-
-    pub fn tx1(&self) -> &Tx<(PIO, pio::SM1)> {
-        &self.tx_fifo.1
-    }
-
-    pub fn tx2(&self) -> &Tx<(PIO, pio::SM2)> {
-        &self.tx_fifo.2
+    pub fn tx(
+        &self,
+    ) -> (
+        &Tx<(PIO, pio::SM0)>,
+        &Tx<(PIO, pio::SM1)>,
+        &Tx<(PIO, pio::SM2)>,
+    ) {
+        (&self.tx_fifo.0, &self.tx_fifo.1, &self.tx_fifo.2)
     }
 
     pub fn wait_fifos_full(&self) {
-        wait_fifo_full(self.tx0());
-        wait_fifo_full(self.tx1());
-        wait_fifo_full(self.tx2());
+        wait_fifo_full(&self.tx_fifo.0);
+        wait_fifo_full(&self.tx_fifo.1);
+        wait_fifo_full(&self.tx_fifo.2);
     }
 
     pub fn enable(&mut self) {
