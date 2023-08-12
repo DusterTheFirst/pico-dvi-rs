@@ -119,8 +119,9 @@ where
         // TODO: bludgeon rp2040-hal, or whichever crate it is that's supposed to
         // be in charge of such things, into doing this the "right" way.
         unsafe {
-            let multi_chan_trigger: *mut u32 = 0x5000_0430 as *mut _;
-            multi_chan_trigger.write_volatile(mask);
+            (*rp_pico::pac::DMA::ptr())
+                .multi_chan_trigger
+                .write(|w| w.multi_chan_trigger().bits(mask));
         }
     }
 
