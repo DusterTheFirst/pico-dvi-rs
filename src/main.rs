@@ -155,15 +155,16 @@ fn entry() -> ! {
         serializer.tx(),
     );
 
-    let mut inst = DviInst::new(timing, dma_channels);
+    {
+        // Safety: the DMA_IRQ_0 handler is not enabled yet. We have exclusive access to this static.
+        let inst = unsafe { (*DVI_INST.0.get()).write(DviInst::new(timing, dma_channels)) };
 
-    inst.setup_dma();
-    inst.start();
-    // Safety: until interrupts are enabled, initialization is the only
-    // access to the instance. After interrupts are enabled, the interrupt
-    // handler is the only access to the instance.
+        inst.setup_dma();
+        inst.start();
+    }
+    // Safety: we pass ownership of DVI_INST to the DMA_IRQ_0 handler.
+    // For this to be safe, no references to DVI_INST can be used after this unmask
     unsafe {
-        *DVI_INST.0.get() = MaybeUninit::new(inst);
         NVIC::unmask(Interrupt::DMA_IRQ_0);
     }
     serializer.wait_fifos_full();
