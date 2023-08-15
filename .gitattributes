@@ -1,2 +1,1 @@
 *.pio linguist-language=Assembly
-tools/vcocalc.py linguist-vendored
