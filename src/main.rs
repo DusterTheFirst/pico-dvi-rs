@@ -6,11 +6,11 @@ extern crate alloc;
 use core::{arch::global_asm, cell::UnsafeCell, mem::MaybeUninit};
 
 use defmt_rtt as _;
-use dvi::dma::DmaChannelList;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
 use cortex_m::{delay::Delay, peripheral::NVIC};
 use defmt::{dbg, info};
+use dvi::dma::DmaChannelList;
 use embedded_alloc::Heap;
 use embedded_hal::digital::v2::ToggleableOutputPin;
 use rp_pico::{

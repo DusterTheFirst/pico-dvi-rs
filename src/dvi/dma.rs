@@ -162,7 +162,7 @@ impl DmaControlBlock {
         self.transfer_count = transfer_count;
         self.config = DmaChannelConfig::default()
             .ring(false, read_ring)
-            .dreq(dma_cfg.dreq)
+            .data_request(dma_cfg.dreq)
             .chain_to(dma_cfg.control_channel.id())
             .irq_quiet(!irq_on_finish);
     }
@@ -187,7 +187,7 @@ impl Default for DmaChannelConfig {
         let mut bits = 0;
         bits |= 1 << 0; // enable
         bits |= 2 << 2; // data size = 32 bits
-        Self(bits).read_increment(true).dreq(0x3f)
+        Self(bits).read_increment(true).data_request(0x3f)
     }
 }
 
@@ -217,7 +217,7 @@ impl DmaChannelConfig {
         Self(bits)
     }
 
-    fn dreq(self, dreq: u8) -> Self {
+    fn data_request(self, dreq: u8) -> Self {
         let mut bits = self.0 & !0x1f8000;
         bits |= (dreq as u32) << 15;
         Self(bits)

@@ -112,25 +112,25 @@ const DVI_LANE_CHUNKS: usize = 2;
 
 #[derive(Default)]
 pub struct DviScanlineDmaList {
-    l0: [DmaControlBlock; DVI_SYNC_LANE_CHUNKS],
-    l1: [DmaControlBlock; DVI_LANE_CHUNKS],
-    l2: [DmaControlBlock; DVI_LANE_CHUNKS],
+    lane0: [DmaControlBlock; DVI_SYNC_LANE_CHUNKS],
+    lane1: [DmaControlBlock; DVI_LANE_CHUNKS],
+    lane2: [DmaControlBlock; DVI_LANE_CHUNKS],
 }
 
 impl DviScanlineDmaList {
     pub fn lane(&self, i: usize) -> &[DmaControlBlock] {
         match i {
-            0 => &self.l0,
-            1 => &self.l1,
-            _ => &self.l2,
+            0 => &self.lane0,
+            1 => &self.lane1,
+            _ => &self.lane2,
         }
     }
 
     fn lane_mut(&mut self, i: usize) -> &mut [DmaControlBlock] {
         match i {
-            0 => &mut self.l0,
-            1 => &mut self.l1,
-            _ => &mut self.l2,
+            0 => &mut self.lane0,
+            1 => &mut self.lane1,
+            _ => &mut self.lane2,
         }
     }
 
@@ -147,7 +147,7 @@ impl DviScanlineDmaList {
         let vsync = (line_state == DviTimingLineState::Sync) == timing.v_sync_polarity;
         let symbol_hsync_off = get_ctrl_symbol(vsync, !timing.h_sync_polarity);
         let symbol_hsync_on = get_ctrl_symbol(vsync, timing.h_sync_polarity);
-        let lane = &mut self.l0;
+        let lane = &mut self.lane0;
         lane[0].set(
             symbol_hsync_off,
             dma_cfg,
@@ -197,21 +197,21 @@ impl DviScanlineDmaList {
 
     pub fn setup_scanline<Channels: DmaChannelList>(
         &mut self,
-        t: &DviTiming,
-        dma_cfg: &DmaChannels<Channels>,
+        timing: &DviTiming,
+        channels: &DmaChannels<Channels>,
         line_state: DviTimingLineState,
         has_data: bool,
     ) {
-        self.setup_lane_0(t, &dma_cfg.lane0, line_state, has_data);
-        self.setup_lane_12(1, t, &dma_cfg.lane1, line_state, has_data);
-        self.setup_lane_12(2, t, &dma_cfg.lane2, line_state, has_data);
+        self.setup_lane_0(timing, &channels.lane0, line_state, has_data);
+        self.setup_lane_12(1, timing, &channels.lane1, line_state, has_data);
+        self.setup_lane_12(2, timing, &channels.lane2, line_state, has_data);
     }
 
     pub fn update_scanline(&mut self, buf: *const TmdsPair, stride: u32) {
         unsafe {
-            self.l0[3].update_buf(buf);
-            self.l1[1].update_buf(buf.add(stride as usize));
-            self.l2[1].update_buf(buf.add(stride as usize * 2));
+            self.lane0[3].update_buf(buf);
+            self.lane1[1].update_buf(buf.add(stride as usize));
+            self.lane2[1].update_buf(buf.add(stride as usize * 2));
         }
     }
 }
