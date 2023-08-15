@@ -40,6 +40,7 @@ mod clock;
 mod dvi;
 mod link;
 mod render;
+mod scanlist;
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();

@@ -5,7 +5,7 @@ pub mod tmds;
 
 use alloc::boxed::Box;
 
-use crate::{pac::interrupt, DVI_INST};
+use crate::{pac::interrupt, render::ScanRender, DVI_INST};
 
 use self::{
     dma::{DmaChannelList, DmaChannels},
@@ -49,6 +49,7 @@ pub struct DviInst<Channels: DmaChannelList> {
     dma_list_error: DviScanlineDmaList,
 
     tmds_buf: Box<[TmdsPair]>,
+    scan_render: ScanRender,
 }
 
 impl<Channels: DmaChannelList> DviInst<Channels> {
@@ -64,6 +65,7 @@ impl<Channels: DmaChannelList> DviInst<Channels> {
             dma_list_active: Default::default(),
             dma_list_error: Default::default(),
             tmds_buf: buf.into(),
+            scan_render: ScanRender::new(),
         }
     }
 
@@ -127,7 +129,7 @@ impl<Channels: DmaChannelList> DviInst<Channels> {
                 let line_size = self.timing.horizontal_words() as usize * N_CHANNELS;
                 let line_start = line_size * buf_ix;
                 let tmds_slice = &mut self.tmds_buf[line_start..][..line_size];
-                crate::render::render_scanline(tmds_slice, y);
+                self.scan_render.render_scanline(tmds_slice, y);
             }
         }
     }
