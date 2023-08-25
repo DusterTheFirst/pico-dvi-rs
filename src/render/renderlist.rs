@@ -12,19 +12,27 @@ extern "C" {
     fn render_blit_straddle();
 
     fn render_blit_straddle_out();
+
+    fn render_blit_64_aligned();
+
+    fn render_blit_64_straddle();
 }
 
-pub struct Renderlist(Vec<u32>);
+pub struct Renderlist(Vec<u32>, u32);
 
 pub struct RenderlistBuilder {
     v: Vec<u32>,
+    width: u32,
+    x: u32,
     stripe_start: usize,
 }
 
 impl RenderlistBuilder {
-    pub fn new() -> Self {
+    pub fn new(width: u32) -> Self {
         RenderlistBuilder {
             v: alloc::vec![],
+            width,
+            x: 0,
             stripe_start: 0,
         }
     }
@@ -33,6 +41,8 @@ impl RenderlistBuilder {
         renderlist.0.clear();
         RenderlistBuilder {
             v: renderlist.0,
+            width: renderlist.1,
+            x: 0,
             stripe_start: 0,
         }
     }
@@ -46,6 +56,63 @@ impl RenderlistBuilder {
         let len = self.v.len();
         self.v[self.stripe_start + 1] = len as u32;
         self.stripe_start = len;
+        self.x = 0;
+    }
+
+    fn tile_slice(&mut self, tile: &[u32], stride: u32, start: u32, end: u32) {
+        let next = self.x % 8 + 8 - start;
+        let op = if next > 8 {
+            render_blit_straddle
+        } else if next == 8 {
+            render_blit_out
+        } else {
+            render_blit_simple
+        };
+        let tile_ptr = tile.as_ptr() as u32;
+        let mut shifts = start * 4;
+        if next > 8 {
+            shifts |= (self.x % 8) << 10;
+            shifts |= (8 - end) << 18;
+            shifts |= (16 - next) << 26;
+        } else {
+            shifts |= (8 - (end - start)) << 10;
+            shifts |= (8 - next) << 18;
+        }
+        self.v.extend([op as u32, tile_ptr, stride, shifts]);
+        self.x += end - start;
+    }
+
+    // Note: this is currently set up for 4bpp, but could be adapted
+    // for other bit widths.
+    pub fn tile64(&mut self, tile: &[u32], start: u32, mut end: u32) {
+        if self.x + (end - start) >= self.width {
+            end = self.width - self.x + start;
+        }
+        let stride = 8; // hardcoded for tiles, but maybe should be an argument
+        if start == 0 && end == 16 {
+            let offset = self.x % 8;
+            if offset == 0 {
+                self.v
+                    .extend([render_blit_64_aligned as u32, tile.as_ptr() as u32, stride]);
+            } else {
+                let off4 = offset * 4;
+                let shift = off4 + ((32 - off4) << 8);
+                self.v.extend([
+                    render_blit_64_straddle as u32,
+                    tile.as_ptr() as u32,
+                    stride,
+                    shift,
+                ]);
+            }
+            self.x += start + end;
+        } else {
+            if start < 8 {
+                self.tile_slice(tile, stride, start, end.min(8));
+            }
+            if end > 8 {
+                self.tile_slice(&tile[1..], stride, start.max(8) - 8, end - 8);
+            }
+        }
     }
 
     /// Returns width.
@@ -92,7 +159,7 @@ impl RenderlistBuilder {
     }
 
     pub fn build(self) -> Renderlist {
-        Renderlist(self.v)
+        Renderlist(self.v, self.width)
     }
 }
 

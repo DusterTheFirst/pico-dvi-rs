@@ -30,7 +30,7 @@ use self::{
 /// This is usually 3 for RGB, but can also be 1 for grayscale, in which case
 /// the TMDS buffer is output to all three channels.
 pub const N_CHANNELS: usize = 3;
-pub const VERTICAL_REPEAT: usize = 2;
+pub const VERTICAL_REPEAT: usize = 1;
 
 /// The additional time (in scanlines) for the TMDS encoding routine.
 ///
