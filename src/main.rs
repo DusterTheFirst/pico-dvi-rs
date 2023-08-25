@@ -290,6 +290,7 @@ fn ram_y() {
     dbg!(ram_y as fn() as *const ());
 }
 
+/// Called by the system only when core 1 is overloaded and can't handle all the rendering work, and requests core 0 to render one scan line worth of content.
 #[link_section = ".data"]
 #[interrupt]
 fn SIO_IRQ_PROC0() {

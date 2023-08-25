@@ -237,6 +237,7 @@ where
     }
 }
 
+/// Called on core 1 every scan line by the DMA controller
 #[link_section = ".data"]
 #[interrupt]
 fn DMA_IRQ_0() {

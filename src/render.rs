@@ -233,6 +233,7 @@ impl DisplayList {
     }
 }
 
+/// The system assumes that this is called before [`start_display_list`]
 pub fn init_display_swapcell() {
     // The display list doesn't have to be usable.
     DISPLAY_LIST_SWAPCELL.set_for_client(DisplayList::new(0, 0));
@@ -240,6 +241,8 @@ pub fn init_display_swapcell() {
 
 /// Start building a display list. This blocks until a free display
 /// list is available.
+///
+/// The user must have called [`init_display_swapcell`] before calling this.
 pub fn start_display_list() -> (RenderlistBuilder, ScanlistBuilder) {
     let display_list = DISPLAY_LIST_SWAPCELL.take_blocking();
     let rb = RenderlistBuilder::recycle(display_list.render);
