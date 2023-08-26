@@ -29,6 +29,10 @@ impl<T> SwapCell<T> {
         }
     }
 
+    /// Make a value available for the client.
+    ///
+    /// It is assumed that there is a program ordering betwen this and the
+    /// corresponding `take_blocking()'.
     pub fn set_for_client(&self, val: T) {
         unsafe {
             (*self.value.get()).write(val);
@@ -36,6 +40,7 @@ impl<T> SwapCell<T> {
         self.state.store(STATE_READY_FOR_CLIENT, Ordering::Relaxed);
     }
 
+    /// Make a value available for the system.
     pub fn set_for_system(&self, val: T) {
         unsafe {
             (*self.value.get()).write(val);
@@ -43,6 +48,9 @@ impl<T> SwapCell<T> {
         self.state.store(STATE_READY_FOR_SYSTEM, Ordering::Release);
     }
 
+    /// Take the value when it's ready for the client.
+    ///
+    /// Block until the value is ready.
     pub fn take_blocking(&self) -> T {
         while self.state.load(Ordering::Acquire) != STATE_READY_FOR_CLIENT {
             wfe();
@@ -52,16 +60,20 @@ impl<T> SwapCell<T> {
         val
     }
 
-    pub fn ready_for_system(&self) -> bool {
-        self.state.load(Ordering::Acquire) == STATE_READY_FOR_SYSTEM
-    }
-
-    /// Safety: only valid if `ready_for_system()` returns `true`.
-    pub fn swap_by_system(&self, slot: &mut T) {
-        unsafe {
-            core::mem::swap((*self.value.get()).assume_init_mut(), slot);
+    /// Swap the value if it's ready for the system.
+    ///
+    /// Returns `true` if the value was swapped, leaving the swapped value
+    /// available for the client.
+    pub fn try_swap_by_system(&self, slot: &mut T) -> bool {
+        if self.state.load(Ordering::Acquire) == STATE_READY_FOR_SYSTEM {
+            unsafe {
+                core::mem::swap((*self.value.get()).assume_init_mut(), slot);
+            }
+            self.state.store(STATE_READY_FOR_CLIENT, Ordering::Release);
+            sev();
+            true
+        } else {
+            false
         }
-        self.state.store(STATE_READY_FOR_CLIENT, Ordering::Release);
-        sev();
     }
 }

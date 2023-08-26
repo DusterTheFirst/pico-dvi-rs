@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::dvi::tmds::TmdsPair;
+use crate::{dvi::tmds::TmdsPair, render::PaletteEntry};
 
 extern "C" {
     fn tmds_scan_stop();
@@ -81,7 +81,7 @@ impl ScanlistBuilder {
 
     /// Safety note: we take a reference to the palette, but the
     /// lifetime must extend until it is used.
-    pub fn pal_1bpp(&mut self, count: u32, palette: &[TmdsPair]) {
+    pub fn pal_1bpp(&mut self, count: u32, palette: &[PaletteEntry]) {
         self.v.push(tmds_scan_1bpp_pal as u32);
         self.v.push(count / 2);
         self.v.push(palette.as_ptr() as u32);

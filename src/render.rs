@@ -5,7 +5,7 @@ mod renderlist;
 mod swapcell;
 
 pub use font::FONT_HEIGHT;
-pub use palette::BW_PALETTE;
+pub use palette::{BW_PALETTE, PaletteEntry};
 
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
@@ -161,9 +161,7 @@ impl ScanRender {
         if y == 0 {
             // The swap is scheduled on scanline 0, but we'd want to move this
             // earlier if we wanted to do more stuff like palettes.
-            if DISPLAY_LIST_SWAPCELL.ready_for_system() {
-                DISPLAY_LIST_SWAPCELL.swap_by_system(&mut self.display_list);
-            }
+            DISPLAY_LIST_SWAPCELL.try_swap_by_system(&mut self.display_list);
 
             self.render_ptr = self.display_list.render.get().as_ptr();
             self.render_y = 0;
