@@ -71,7 +71,7 @@ impl ScanlistBuilder {
     ///
     /// This method only works when aligned to 2-pixel boundaries.
     pub fn solid(&mut self, count: u32, color: [TmdsPair; 3]) {
-        self.v.extend([
+        self.v.extend_from_slice(&[
             tmds_scan_solid_tmds as u32,
             count / 2,
             color[0].raw(),
@@ -84,18 +84,22 @@ impl ScanlistBuilder {
     /// Safety note: we take a reference to the palette, but the
     /// lifetime must extend until it is used.
     pub fn pal_1bpp(&mut self, count: u32, palette: &[PaletteEntry]) {
-        self.v.push(tmds_scan_1bpp_pal as u32);
-        self.v.push(count / 2);
-        self.v.push(palette.as_ptr() as u32);
+        self.v.extend_from_slice(&[
+            tmds_scan_1bpp_pal as u32,
+            count / 2,
+            palette.as_ptr() as u32,
+        ]);
         self.x += count;
     }
 
     /// Safety note: we take a reference to the palette, but the
     /// lifetime must extend until it is used.
     pub fn pal_4bpp(&mut self, count: u32, palette: &[PaletteEntry]) {
-        self.v.push(tmds_scan_4bpp_pal as u32);
-        self.v.push(count / 2);
-        self.v.push(palette.as_ptr() as u32);
+        self.v.extend_from_slice(&[
+            tmds_scan_4bpp_pal as u32,
+            count / 2,
+            palette.as_ptr() as u32,
+        ]);
         self.x += count;
     }
 }
