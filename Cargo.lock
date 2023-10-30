@@ -3,6 +3,17 @@
 version = 3
 
 [[package]]
+name = "adafruit-feather-rp2040"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d5dcc126017a99c6754575dd4c4bb47625e187179b5bea776c31bf4b9235240"
+dependencies = [
+ "cortex-m-rt",
+ "rp2040-boot2",
+ "rp2040-hal",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -617,7 +628,7 @@ dependencies = [
  "panic-probe",
  "pio",
  "pio-proc",
- "rp-pico",
+ "rp2040-bsp",
 ]
 
 [[package]]
@@ -798,6 +809,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c92f344f63f950ee36cf4080050e4dce850839b9175da38f9d2ffb69b4dbb21"
 dependencies = [
  "crc-any",
+]
+
+[[package]]
+name = "rp2040-bsp"
+version = "0.0.0"
+dependencies = [
+ "adafruit-feather-rp2040",
+ "rp-pico",
 ]
 
 [[package]]

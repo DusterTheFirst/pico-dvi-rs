@@ -12,6 +12,9 @@ resolver = "2"
 publish = false
 version = "0.0.0"
 
+[workspace]
+members = ["crates/*"]
+
 [dependencies]
 cortex-m       = "0.7.7"
 cortex-m-rt    = "0.7.3"
@@ -25,10 +28,15 @@ panic-probe = { version = "0.3.0", features = ["print-defmt"] }
 fugit    = { version = "0.3.6", features = ["defmt"] }
 pio      = "0.2.1"
 pio-proc = "0.2.1"
-rp-pico  = { version = "0.8.0", features = ["rom-v2-intrinsics"] }
 
-# TODO: use for bitfield
+rp2040-bsp = { path = "./crates/rp2040-bsp" }
+
+# TODO: use for bitfields
 # bilge = "0.1.5"
+
+[features]
+adafruit-feather-rp2040 = ["rp2040-bsp/adafruit-feather-rp2040"]
+rp-pico                 = ["rp2040-bsp/rp-pico"]
 
 [dev-dependencies]
 defmt-test = "0.3.0"
