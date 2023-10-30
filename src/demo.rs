@@ -1,6 +1,6 @@
 use alloc::format;
 use embedded_hal::digital::v2::ToggleableOutputPin;
-use rp_pico::hal::gpio::{Pin, PinId, PushPullOutput};
+use rp_pico::hal::gpio::{FunctionSioOutput, Pin, PinId, PullDown};
 
 use crate::{
     dvi::VERTICAL_REPEAT,
@@ -15,7 +15,7 @@ const TILE_DATA: &[u32] = &[
 ];
 
 struct Counter<P: PinId> {
-    led_pin: Pin<P, PushPullOutput>,
+    led_pin: Pin<P, FunctionSioOutput, PullDown>,
     count: u32,
 }
 
@@ -125,7 +125,7 @@ fn tiles<P: PinId>(counter: &mut Counter<P>) {
     end_display_list(rb, sb);
 }
 
-pub fn demo<P: PinId>(led_pin: Pin<P, PushPullOutput>) -> ! {
+pub fn demo<P: PinId>(led_pin: Pin<P, FunctionSioOutput, PullDown>) -> ! {
     let mut counter = Counter { led_pin, count: 0 };
 
     loop {

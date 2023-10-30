@@ -138,18 +138,18 @@ fn entry() -> ! {
         (
             DviDataPins {
                 // 0
-                blue_pos: pins.gpio12.into_mode(),
-                blue_neg: pins.gpio13.into_mode(),
+                blue_pos: pins.gpio12.into_function(),
+                blue_neg: pins.gpio13.into_function(),
                 // 1
-                green_pos: pins.gpio10.into_mode(),
-                green_neg: pins.gpio11.into_mode(),
+                green_pos: pins.gpio10.into_function(),
+                green_neg: pins.gpio11.into_function(),
                 // 2
-                red_pos: pins.gpio16.into_mode(),
-                red_neg: pins.gpio17.into_mode(),
+                red_pos: pins.gpio16.into_function(),
+                red_neg: pins.gpio17.into_function(),
             },
             DviClockPins {
-                clock_pos: pins.gpio14,
-                clock_neg: pins.gpio15,
+                clock_pos: pins.gpio14.into_function(),
+                clock_neg: pins.gpio15.into_function(),
                 pwm_slice: pwm_slices.pwm7,
             },
         )

@@ -6,7 +6,7 @@ pub mod tmds;
 use alloc::boxed::Box;
 use cortex_m::peripheral::NVIC;
 use rp_pico::hal::{
-    gpio::{bank0, PinId},
+    gpio::PinId,
     pac::Interrupt,
     pio,
     pwm::{self, ValidPwmOutputPin},
@@ -214,14 +214,14 @@ pub fn core1_main<PIO, SliceId, Pos, Neg, RedPos, RedNeg, GreenPos, GreenNeg, Bl
 where
     PIO: pio::PIOExt,
     SliceId: pwm::SliceId,
-    Pos: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::A>,
-    Neg: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::B>,
-    RedPos: PinId + bank0::BankPinId,
-    RedNeg: PinId + bank0::BankPinId,
-    GreenPos: PinId + bank0::BankPinId,
-    GreenNeg: PinId + bank0::BankPinId,
-    BluePos: PinId + bank0::BankPinId,
-    BlueNeg: PinId + bank0::BankPinId,
+    Pos: PinId + ValidPwmOutputPin<SliceId, pwm::A>,
+    Neg: PinId + ValidPwmOutputPin<SliceId, pwm::B>,
+    RedPos: PinId,
+    RedNeg: PinId,
+    GreenPos: PinId,
+    GreenNeg: PinId,
+    BluePos: PinId,
+    BlueNeg: PinId,
 {
     unsafe {
         NVIC::unmask(Interrupt::DMA_IRQ_0);

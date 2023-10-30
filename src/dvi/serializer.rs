@@ -2,8 +2,8 @@ use embedded_hal::PwmPin;
 use rp_pico::{
     hal::{
         gpio::{
-            self, bank0, Disabled, FunctionPwm, OutputDriveStrength, OutputOverride,
-            OutputSlewRate, Pin, PinId, PinMode, PullDown, ValidPinMode,
+            FunctionPio0, FunctionPwm, OutputDriveStrength, OutputOverride, OutputSlewRate, Pin,
+            PinId, PullDown,
         },
         pio::{
             self, InstalledProgram, PIOBuilder, PinDir, Running, StateMachine, StateMachineGroup3,
@@ -16,32 +16,31 @@ use rp_pico::{
 
 pub struct DviDataPins<RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>
 where
-    RedPos: PinId + bank0::BankPinId,
-    RedNeg: PinId + bank0::BankPinId,
-    GreenPos: PinId + bank0::BankPinId,
-    GreenNeg: PinId + bank0::BankPinId,
-    BluePos: PinId + bank0::BankPinId,
-    BlueNeg: PinId + bank0::BankPinId,
+    RedPos: PinId,
+    RedNeg: PinId,
+    GreenPos: PinId,
+    GreenNeg: PinId,
+    BluePos: PinId,
+    BlueNeg: PinId,
 {
-    pub red_pos: Pin<RedPos, gpio::FunctionPio0>,
-    pub red_neg: Pin<RedNeg, gpio::FunctionPio0>,
+    pub red_pos: Pin<RedPos, FunctionPio0, PullDown>,
+    pub red_neg: Pin<RedNeg, FunctionPio0, PullDown>,
 
-    pub green_pos: Pin<GreenPos, gpio::FunctionPio0>,
-    pub green_neg: Pin<GreenNeg, gpio::FunctionPio0>,
+    pub green_pos: Pin<GreenPos, FunctionPio0, PullDown>,
+    pub green_neg: Pin<GreenNeg, FunctionPio0, PullDown>,
 
-    pub blue_pos: Pin<BluePos, gpio::FunctionPio0>,
-    pub blue_neg: Pin<BlueNeg, gpio::FunctionPio0>,
+    pub blue_pos: Pin<BluePos, FunctionPio0, PullDown>,
+    pub blue_neg: Pin<BlueNeg, FunctionPio0, PullDown>,
 }
 
-pub struct DviClockPins<SliceId, Pos, Neg, Mode>
+pub struct DviClockPins<SliceId, Pos, Neg>
 where
     SliceId: pwm::SliceId,
-    Pos: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::A>,
-    Neg: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::B>,
-    Mode: PinMode + ValidPinMode<Pos> + ValidPinMode<Neg>,
+    Pos: PinId + ValidPwmOutputPin<SliceId, pwm::A>,
+    Neg: PinId + ValidPwmOutputPin<SliceId, pwm::B>,
 {
-    pub clock_pos: Pin<Pos, Mode>, // TODO: allow different order?
-    pub clock_neg: Pin<Neg, Mode>,
+    pub clock_pos: Pin<Pos, FunctionPwm, PullDown>, // TODO: allow different order?
+    pub clock_neg: Pin<Neg, FunctionPwm, PullDown>,
     pub pwm_slice: Slice<SliceId, FreeRunning>,
 }
 
@@ -59,18 +58,18 @@ pub struct DviSerializer<
 > where
     PIO: pio::PIOExt,
     SliceId: pwm::SliceId,
-    Pos: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::A>,
-    Neg: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::B>,
-    RedPos: PinId + bank0::BankPinId,
-    RedNeg: PinId + bank0::BankPinId,
-    GreenPos: PinId + bank0::BankPinId,
-    GreenNeg: PinId + bank0::BankPinId,
-    BluePos: PinId + bank0::BankPinId,
-    BlueNeg: PinId + bank0::BankPinId,
+    Pos: PinId + ValidPwmOutputPin<SliceId, pwm::A>,
+    Neg: PinId + ValidPwmOutputPin<SliceId, pwm::B>,
+    RedPos: PinId,
+    RedNeg: PinId,
+    GreenPos: PinId,
+    GreenNeg: PinId,
+    BluePos: PinId,
+    BlueNeg: PinId,
 {
     pio: pio::PIO<PIO>, // FIXME:
     data_pins: DviDataPins<RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>, // FIXME:
-    clock_pins: DviClockPins<SliceId, Pos, Neg, FunctionPwm>,
+    clock_pins: DviClockPins<SliceId, Pos, Neg>,
 
     state_machines: StateMachineState<PIO>,
     tx_fifo: (
@@ -102,24 +101,24 @@ impl<PIO, SliceId, ClockPos, ClockNeg, RedPos, RedNeg, GreenPos, GreenNeg, BlueP
 where
     PIO: pio::PIOExt,
     SliceId: pwm::SliceId,
-    ClockPos: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::A>,
-    ClockNeg: PinId + bank0::BankPinId + ValidPwmOutputPin<SliceId, pwm::B>,
-    RedPos: PinId + bank0::BankPinId,
-    RedNeg: PinId + bank0::BankPinId,
-    GreenPos: PinId + bank0::BankPinId,
-    GreenNeg: PinId + bank0::BankPinId,
-    BluePos: PinId + bank0::BankPinId,
-    BlueNeg: PinId + bank0::BankPinId,
+    ClockPos: PinId + ValidPwmOutputPin<SliceId, pwm::A>,
+    ClockNeg: PinId + ValidPwmOutputPin<SliceId, pwm::B>,
+    RedPos: PinId,
+    RedNeg: PinId,
+    GreenPos: PinId,
+    GreenNeg: PinId,
+    BluePos: PinId,
+    BlueNeg: PinId,
 {
     fn configure_state_machine<Pos, Neg, SM>(
         program: &InstalledProgram<PIO>,
         state_machine: UninitStateMachine<(PIO, SM)>,
-        pos_pin: &mut Pin<Pos, gpio::FunctionPio0>,
-        neg_pin: &mut Pin<Neg, gpio::FunctionPio0>,
+        pos_pin: &mut Pin<Pos, FunctionPio0, PullDown>,
+        neg_pin: &mut Pin<Neg, FunctionPio0, PullDown>,
     ) -> (StateMachine<(PIO, SM), Stopped>, Tx<(PIO, SM)>)
     where
-        Pos: PinId + bank0::BankPinId,
-        Neg: PinId + bank0::BankPinId,
+        Pos: PinId,
+        Neg: PinId,
         SM: StateMachineIndex,
     {
         let positive_id = pos_pin.id().num;
@@ -164,7 +163,7 @@ where
         pio: PIO,
         resets: &mut pac::RESETS,
         mut data_pins: DviDataPins<RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>,
-        mut clock_pins: DviClockPins<SliceId, ClockPos, ClockNeg, Disabled<PullDown>>,
+        mut clock_pins: DviClockPins<SliceId, ClockPos, ClockNeg>,
     ) -> Self {
         let (mut pio, state_machine_blue, state_machine_green, state_machine_red, _) =
             pio.split(resets);
