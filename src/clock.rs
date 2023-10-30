@@ -1,17 +1,15 @@
 use fugit::{KilohertzU32, MegahertzU32, RateExtU32};
-use rp_pico::{
-    hal::{
-        clocks::{ClockSource, ClocksManager},
-        pll::{
-            self,
-            common_configs::{PLL_SYS_125MHZ, PLL_USB_48MHZ},
-            setup_pll_blocking, PLLConfig, PhaseLockedLoop,
-        },
-        rosc::RingOscillator,
-        xosc::{self, setup_xosc_blocking, CrystalOscillator},
-        Clock, Watchdog,
+use rp2040_hal::{
+    clocks::{ClockSource, ClocksManager},
+    pac,
+    pll::{
+        self,
+        common_configs::{PLL_SYS_125MHZ, PLL_USB_48MHZ},
+        setup_pll_blocking, PLLConfig, PhaseLockedLoop,
     },
-    pac, XOSC_CRYSTAL_FREQ,
+    rosc::RingOscillator,
+    xosc::{self, setup_xosc_blocking, CrystalOscillator},
+    Clock, Watchdog,
 };
 
 struct ClockCfg {
@@ -28,7 +26,9 @@ const PICO_PLL_VCO_MAX_FREQ: MegahertzU32 = MegahertzU32::MHz(1600);
 ///
 /// Logic is adapted from check_sys_clock_khz in pico-sdk
 #[doc(alias = "check_sys_clock_khz", alias = "vcocalc")]
-fn configure_sys_clock(requested_freq: KilohertzU32) -> Option<ClockCfg> {
+fn configure_sys_clock<const XOSC_CRYSTAL_FREQ: u32>(
+    requested_freq: KilohertzU32,
+) -> Option<ClockCfg> {
     let crystal_freq: KilohertzU32 = XOSC_CRYSTAL_FREQ.Hz();
 
     // Its called a feedback divider but it really is a clock multiplier
@@ -70,7 +70,7 @@ fn configure_sys_clock(requested_freq: KilohertzU32) -> Option<ClockCfg> {
 }
 
 /// Since we need to overclock the pico, we need to set these clocks up ourselves
-pub fn init_clocks(
+pub fn init_clocks<const XOSC_CRYSTAL_FREQ: u32>(
     xosc: pac::XOSC,
     rosc: pac::ROSC,
     clocks: pac::CLOCKS,
@@ -91,7 +91,7 @@ pub fn init_clocks(
 
     let mut clocks = ClocksManager::new(clocks);
 
-    let clk_cfg = configure_sys_clock(freq_khz);
+    let clk_cfg = configure_sys_clock::<XOSC_CRYSTAL_FREQ>(freq_khz);
     let pll_config = match clk_cfg {
         Some(ClockCfg {
             vco_freq,

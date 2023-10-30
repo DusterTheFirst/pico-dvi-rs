@@ -22,16 +22,20 @@ defmt       = "0.3.2"
 defmt-rtt   = "0.4.0"
 panic-probe = { version = "0.3.0", features = ["print-defmt"] }
 
-fugit    = { version = "0.3.6", features = ["defmt"] }
-pio      = "0.2.1"
-pio-proc = "0.2.1"
-rp-pico  = { version = "0.8.0", features = ["rom-v2-intrinsics"] }
+fugit      = { version = "0.3.6", features = ["defmt"] }
+pio        = "0.2.1"
+pio-proc   = "0.2.1"
+rp2040-hal = { version = "0.9.0", features = ["rt"] }
 
 # TODO: use for bitfield
 # bilge = "0.1.5"
 
 [dev-dependencies]
 defmt-test = "0.3.0"
+
+# Board support packages
+adafruit-feather-rp2040 = { version = "0.7.0", features = ["rom-v2-intrinsics", "rp2040-e5"] }
+rp-pico                 = { version = "0.8.0", features = ["rom-v2-intrinsics", "rp2040-e5"] }
 
 # cargo build/run
 [profile.dev]

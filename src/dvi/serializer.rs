@@ -1,17 +1,15 @@
 use embedded_hal::PwmPin;
-use rp_pico::{
-    hal::{
-        gpio::{
-            FunctionPio0, FunctionPwm, OutputDriveStrength, OutputOverride, OutputSlewRate, Pin,
-            PinId, PullDown,
-        },
-        pio::{
-            self, InstalledProgram, PIOBuilder, PinDir, Running, StateMachine, StateMachineGroup3,
-            StateMachineIndex, Stopped, Tx, UninitStateMachine, ValidStateMachine,
-        },
-        pwm::{self, FreeRunning, Slice, ValidPwmOutputPin},
+use rp2040_hal::{
+    gpio::{
+        FunctionPio0, FunctionPwm, OutputDriveStrength, OutputOverride, OutputSlewRate, Pin, PinId,
+        PullDown,
     },
     pac,
+    pio::{
+        self, InstalledProgram, PIOBuilder, PinDir, Running, StateMachine, StateMachineGroup3,
+        StateMachineIndex, Stopped, Tx, UninitStateMachine, ValidStateMachine,
+    },
+    pwm::{self, FreeRunning, Slice, ValidPwmOutputPin},
 };
 
 pub struct DviDataPins<RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>

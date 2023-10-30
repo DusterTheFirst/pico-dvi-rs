@@ -1,6 +1,6 @@
 use alloc::format;
 use embedded_hal::digital::v2::ToggleableOutputPin;
-use rp_pico::hal::gpio::{FunctionSioOutput, Pin, PinId, PullDown};
+use rp2040_hal::gpio::{FunctionSioOutput, Pin, PinId, PullDown};
 
 use crate::{
     dvi::VERTICAL_REPEAT,

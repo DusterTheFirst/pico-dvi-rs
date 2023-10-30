@@ -9,10 +9,7 @@ pub use palette::{init_4bpp_palette, PaletteEntry, BW_PALETTE, GLOBAL_PALETTE};
 
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
-use rp_pico::{
-    hal::{sio::SioFifo, Sio},
-    pac,
-};
+use rp2040_hal::{pac, sio::SioFifo, Sio};
 
 use crate::{
     dvi::{tmds::TmdsPair, VERTICAL_REPEAT},

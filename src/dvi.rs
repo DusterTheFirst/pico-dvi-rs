@@ -5,15 +5,14 @@ pub mod tmds;
 
 use alloc::boxed::Box;
 use cortex_m::peripheral::NVIC;
-use rp_pico::hal::{
+use rp2040_hal::{
     gpio::PinId,
-    pac::Interrupt,
+    pac::{Interrupt, interrupt},
     pio,
     pwm::{self, ValidPwmOutputPin},
 };
 
 use crate::{
-    pac::interrupt,
     render::{render_line, ScanRender, CORE1_QUEUE, N_LINE_BUFS},
     DVI_INST,
 };
