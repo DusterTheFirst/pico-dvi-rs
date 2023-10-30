@@ -5,7 +5,7 @@ mod renderlist;
 mod swapcell;
 
 pub use font::FONT_HEIGHT;
-pub use palette::{BW_PALETTE, PaletteEntry};
+pub use palette::{init_4bpp_palette, PaletteEntry, BW_PALETTE, GLOBAL_PALETTE};
 
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
@@ -181,7 +181,7 @@ impl ScanRender {
         let stripe_height = unsafe { render_ptr.read() };
         if self.render_y == stripe_height {
             let jump = unsafe { render_ptr.add(1).read() as usize };
-            self.render_ptr = unsafe { render_ptr.add(jump) };
+            self.render_ptr = unsafe { self.display_list.render.get().as_ptr().add(jump) };
             self.render_y = 0;
         }
         if CORE1_QUEUE.len() < MAX_CORE1_PENDING {
@@ -218,7 +218,7 @@ pub unsafe fn render_line(line_ix: u32) {
 
 impl DisplayList {
     pub fn new(width: u32, height: u32) -> Self {
-        let mut rb = RenderlistBuilder::new();
+        let mut rb = RenderlistBuilder::new(width);
         let mut sb = ScanlistBuilder::new(width, height);
         rb.begin_stripe(height);
         rb.end_stripe();
@@ -232,9 +232,9 @@ impl DisplayList {
 }
 
 /// The system assumes that this is called before [`start_display_list`]
-pub fn init_display_swapcell() {
+pub fn init_display_swapcell(width: u32) {
     // The display list doesn't have to be usable.
-    DISPLAY_LIST_SWAPCELL.set_for_client(DisplayList::new(0, 0));
+    DISPLAY_LIST_SWAPCELL.set_for_client(DisplayList::new(width, 0));
 }
 
 /// Start building a display list. This blocks until a free display

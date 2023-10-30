@@ -8,6 +8,8 @@ extern "C" {
     fn tmds_scan_solid_tmds();
 
     fn tmds_scan_1bpp_pal();
+
+    fn tmds_scan_4bpp_pal();
 }
 
 /// A display list for TMDS scanout.
@@ -83,6 +85,15 @@ impl ScanlistBuilder {
     /// lifetime must extend until it is used.
     pub fn pal_1bpp(&mut self, count: u32, palette: &[PaletteEntry]) {
         self.v.push(tmds_scan_1bpp_pal as u32);
+        self.v.push(count / 2);
+        self.v.push(palette.as_ptr() as u32);
+        self.x += count;
+    }
+
+    /// Safety note: we take a reference to the palette, but the
+    /// lifetime must extend until it is used.
+    pub fn pal_4bpp(&mut self, count: u32, palette: &[PaletteEntry]) {
+        self.v.push(tmds_scan_4bpp_pal as u32);
         self.v.push(count / 2);
         self.v.push(palette.as_ptr() as u32);
         self.x += count;

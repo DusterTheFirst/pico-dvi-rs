@@ -97,3 +97,37 @@ render_blit_straddle_out:
     movs r3, #0
     ldmia r0!, {r4, r5, r6, r7}
     bx r4
+
+// args: input, stride
+.global render_blit_64_aligned
+.type render_blit_64_aligned,%function
+.thumb_func
+render_blit_64_aligned:
+    muls r6, r2
+    adds r5, r6
+    ldm r5, {r4, r5}
+    stmia r1!, {r4, r5}
+    mov r4, r7
+    ldmia r0!, {r5, r6, r7}
+    bx r4
+
+// args: input, stride, [ls: u8, rs: u8]
+.global render_blit_64_straddle
+.type render_blit_64_straddle,%function
+.thumb_func
+render_blit_64_straddle:
+    muls r6, r2
+    adds r5, r6
+    ldm r5, {r4, r5}
+    movs r6, r4
+    lsls r4, r7
+    orrs r4, r3
+    movs r3, r5
+    lsls r5, r7
+    lsrs r7, #8
+    lsrs r6, r7
+    orrs r5, r6
+    stmia r1!, {r4, r5}
+    lsrs r3, r7
+    ldmia r0!, {r4, r5, r6, r7}
+    bx r4

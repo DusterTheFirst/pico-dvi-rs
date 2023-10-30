@@ -5,7 +5,6 @@ extern crate alloc;
 
 use core::{arch::global_asm, cell::UnsafeCell, mem::MaybeUninit};
 
-use alloc::format;
 use defmt_rtt as _;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
@@ -13,7 +12,6 @@ use cortex_m::peripheral::NVIC;
 use defmt::{dbg, info};
 use dvi::dma::DmaChannelList;
 use embedded_alloc::Heap;
-use embedded_hal::digital::v2::ToggleableOutputPin;
 use rp_pico::{
     hal::{
         dma::{Channel, DMAExt, CH0, CH1, CH2, CH3, CH4, CH5},
@@ -36,15 +34,13 @@ use crate::{
         dma::DmaChannels,
         serializer::{DviClockPins, DviDataPins, DviSerializer},
         timing::VGA_TIMING,
-        DviInst, VERTICAL_REPEAT,
+        DviInst,
     },
-    render::{
-        end_display_list, init_display_swapcell, render_line, rgb, start_display_list, BW_PALETTE,
-        FONT_HEIGHT,
-    },
+    render::{init_4bpp_palette, init_display_swapcell, render_line, GLOBAL_PALETTE},
 };
 
 mod clock;
+mod demo;
 mod dvi;
 mod link;
 mod render;
@@ -91,10 +87,15 @@ fn macro_entry() -> ! {
     entry();
 }
 
+const PALETTE: &[u32] = &[
+    0x0, 0xffffff, 0x9d9d9d, 0xe06f8b, 0xbe2633, 0x493c2b, 0xa46422, 0xeb8931, 0xf7e26b, 0xa3ce27,
+    0x44891a, 0x2f484e, 0x1b2632, 0x5784, 0x31a2f2, 0xb2dcef,
+];
+
 fn entry() -> ! {
     info!("Program start");
     {
-        const HEAP_SIZE: usize = 64 * 1024;
+        const HEAP_SIZE: usize = 128 * 1024;
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
         unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
     }
@@ -128,7 +129,7 @@ fn entry() -> ! {
         &mut peripherals.RESETS,
     );
 
-    let mut led_pin = pins.led.into_push_pull_output_in_state(PinState::Low);
+    let led_pin = pins.led.into_push_pull_output_in_state(PinState::Low);
 
     let pwm_slices = pwm::Slices::new(peripherals.PWM, &mut peripherals.RESETS);
     let dma = peripherals.DMA.split(&mut peripherals.RESETS);
@@ -187,62 +188,18 @@ fn entry() -> ! {
         FIFO = MaybeUninit::new(fifo);
         NVIC::unmask(Interrupt::SIO_IRQ_PROC0);
     }
-    init_display_swapcell();
+    init_display_swapcell(640);
 
     rom();
     ram();
     ram_x();
     ram_y();
 
-    let mut count = 0u32;
-    loop {
-        if count % 15 == 0 {
-            led_pin.toggle().unwrap();
-        }
-        count = count.wrapping_add(1);
-        let (mut rb, mut sb) = start_display_list();
-        let height = 480 / VERTICAL_REPEAT as u32;
-        rb.begin_stripe(height - FONT_HEIGHT);
-        rb.end_stripe();
-        sb.begin_stripe(320 / VERTICAL_REPEAT as u32);
-        sb.solid(92, rgb(0xc0, 0xc0, 0xc0));
-        sb.solid(90, rgb(0xc0, 0xc0, 0));
-        sb.solid(92, rgb(0, 0xc0, 0xc0));
-        sb.solid(92, rgb(0, 0xc0, 0x0));
-        sb.solid(92, rgb(0xc0, 0, 0xc0));
-        sb.solid(90, rgb(0xc0, 0, 0));
-        sb.solid(92, rgb(0, 0, 0xc0));
-        sb.end_stripe();
-        sb.begin_stripe(40 / VERTICAL_REPEAT as u32);
-        sb.solid(92, rgb(0, 0, 0xc0));
-        sb.solid(90, rgb(0x13, 0x13, 0x13));
-        sb.solid(92, rgb(0xc0, 0, 0xc0));
-        sb.solid(92, rgb(0x13, 0x13, 0x13));
-        sb.solid(92, rgb(0, 0xc0, 0xc0));
-        sb.solid(90, rgb(0x13, 0x13, 0x13));
-        sb.solid(92, rgb(0xc0, 0xc0, 0xc0));
-        sb.end_stripe();
-        sb.begin_stripe(120 / VERTICAL_REPEAT as u32 - FONT_HEIGHT);
-        sb.solid(114, rgb(0, 0x21, 0x4c));
-        sb.solid(114, rgb(0xff, 0xff, 0xff));
-        sb.solid(114, rgb(0x32, 0, 0x6a));
-        sb.solid(116, rgb(0x13, 0x13, 0x13));
-        sb.solid(30, rgb(0x09, 0x09, 0x09));
-        sb.solid(30, rgb(0x13, 0x13, 0x13));
-        sb.solid(30, rgb(0x1d, 0x1d, 0x1d));
-        sb.solid(92, rgb(0x13, 0x13, 0x13));
-        sb.end_stripe();
-        rb.begin_stripe(FONT_HEIGHT);
-        let text = format!("Hello pico-dvi-rs, frame {count}");
-        let width = rb.text(&text);
-        let width = width + width % 2;
-        rb.end_stripe();
-        sb.begin_stripe(FONT_HEIGHT);
-        sb.pal_1bpp(width, &BW_PALETTE);
-        sb.solid(640 - width, rgb(0, 0, 0));
-        sb.end_stripe();
-        end_display_list(rb, sb);
+    unsafe {
+        init_4bpp_palette(&mut GLOBAL_PALETTE, PALETTE);
     }
+
+    demo::demo(led_pin);
 }
 
 fn sysinfo(sysinfo: &pac::SYSINFO) {
