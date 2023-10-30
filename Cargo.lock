@@ -12,12 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arbitrary-int"
-version = "1.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe8e2a586ecd6eb29477a0c25b19742acca4fa5e39c92e127656616810c20579"
-
-[[package]]
 name = "arrayvec"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -45,28 +39,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5deb64efa5bd81e31fcd1938615a6d98c82eafcbcd787162b6f63b91d6bac5b3"
 dependencies = [
  "rustc_version",
-]
-
-[[package]]
-name = "bilge"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79ce1664066c385d913b974a9f59746a78b7e550e9ffb7984eda322ab8bf5e08"
-dependencies = [
- "arbitrary-int",
- "bilge-impl",
-]
-
-[[package]]
-name = "bilge-impl"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60fd0a3dc3001795b19260220070e6e8cbb3d8013351f382cc38533a41ca6e27"
-dependencies = [
- "proc-macro-error",
- "proc-macro2",
- "quote",
- "syn 2.0.27",
 ]
 
 [[package]]
@@ -595,7 +567,6 @@ dependencies = [
 name = "pico-dvi-rs"
 version = "0.0.0"
 dependencies = [
- "bilge",
  "cortex-m",
  "cortex-m-rt",
  "defmt",
