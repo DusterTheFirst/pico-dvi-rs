@@ -3,7 +3,10 @@
     "rust-analyzer.check.allTargets": false,
     "cSpell.words": [
         "rosc",
+        "renderlist",
         "scanline",
+        "scanlist",
+        "scanout",
         "sysinfo",
         "Tmds",
         "xosc"

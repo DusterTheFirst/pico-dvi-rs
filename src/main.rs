@@ -20,6 +20,7 @@ use rp_pico::{
         gpio::PinState,
         multicore::{Multicore, Stack},
         pwm,
+        rtc::{DateTime, DayOfWeek, RealTimeClock},
         sio::{Sio, SioFifo},
         watchdog::Watchdog,
     },
@@ -100,7 +101,7 @@ fn entry() -> ! {
     }
 
     let mut peripherals = pac::Peripherals::take().unwrap();
-    //let core_peripherals = pac::CorePeripherals::take().unwrap();
+    // let core_peripherals = pac::CorePeripherals::take().unwrap();
 
     sysinfo(&peripherals.SYSINFO);
 
@@ -110,7 +111,7 @@ fn entry() -> ! {
     let timing = VGA_TIMING;
 
     // External high-speed crystal on the pico board is 12Mhz
-    let _clocks = init_clocks(
+    let clocks = init_clocks(
         peripherals.XOSC,
         peripherals.ROSC,
         peripherals.CLOCKS,
@@ -194,14 +195,54 @@ fn entry() -> ! {
     ram_x();
     ram_y();
 
+    let rtc = RealTimeClock::new(
+        peripherals.RTC,
+        clocks.rtc_clock,
+        &mut peripherals.RESETS,
+        DateTime {
+            year: 2023,
+            month: 8,
+            day: 26,
+            day_of_week: DayOfWeek::Saturday,
+            hour: 19,
+            minute: 53,
+            second: 00,
+        },
+    )
+    .unwrap();
+
     let mut count = 0u32;
+
+    // FPS counter
+    let mut fps = 0;
+    let mut frame_count = 0;
+    let mut last_second = 0;
     loop {
+        let now = rtc.now().unwrap();
+        let day_of_week = match now.day_of_week {
+            DayOfWeek::Sunday => "Sunday",
+            DayOfWeek::Monday => "Monday",
+            DayOfWeek::Tuesday => "Tuesday",
+            DayOfWeek::Wednesday => "Wednesday",
+            DayOfWeek::Thursday => "Thursday",
+            DayOfWeek::Friday => "Friday",
+            DayOfWeek::Saturday => "Saturday",
+        };
+
+        if now.second != last_second {
+            fps = frame_count;
+            frame_count = 0;
+            last_second = now.second;
+        }
+        frame_count += 1;
+
         if count % 15 == 0 {
             led_pin.toggle().unwrap();
         }
         count = count.wrapping_add(1);
         let (mut rb, mut sb) = start_display_list();
         let height = 480 / VERTICAL_REPEAT as u32;
+
         rb.begin_stripe(height - FONT_HEIGHT);
         rb.end_stripe();
         sb.begin_stripe(320 / VERTICAL_REPEAT as u32);
@@ -232,15 +273,21 @@ fn entry() -> ! {
         sb.solid(30, rgb(0x1d, 0x1d, 0x1d));
         sb.solid(92, rgb(0x13, 0x13, 0x13));
         sb.end_stripe();
+
         rb.begin_stripe(FONT_HEIGHT);
-        let text = format!("Hello pico-dvi-rs, frame {count}");
+        let text = format!(
+            "Hello pico-dvi-rs, frame {count} | FPS: {fps} | {day_of_week} {:02}/{:02}/{:04} {:02}:{:02}:{:02}",
+            now.day, now.month, now.year, now.hour, now.minute, now.second
+        );
         let width = rb.text(&text);
         let width = width + width % 2;
         rb.end_stripe();
+
         sb.begin_stripe(FONT_HEIGHT);
         sb.pal_1bpp(width, &BW_PALETTE);
         sb.solid(640 - width, rgb(0, 0, 0));
         sb.end_stripe();
+
         end_display_list(rb, sb);
     }
 }

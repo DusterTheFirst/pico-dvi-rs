@@ -26,71 +26,74 @@ extern "C" {
 /// during scanout).
 pub struct Scanlist(Vec<u32>);
 
+impl Scanlist {
+    pub fn get(&self) -> &[u32] {
+        &self.0
+    }
+}
+
 /// A builder for scanlists.
 ///
 /// The application builds a scanlist, then hands it to the display
 /// system for scanout. Currently it is static, but the intent is for
 /// scanlists to be double-buffered.
 pub struct ScanlistBuilder {
-    v: Vec<u32>,
-    x: u32,
+    scanlist: Vec<u32>,
+    x_position: u32,
 }
 
 impl ScanlistBuilder {
     pub fn new(_width: u32, _height: u32) -> Self {
         ScanlistBuilder {
-            v: alloc::vec![],
-            x: 0,
+            scanlist: alloc::vec![],
+            x_position: 0,
         }
     }
 
+    /// Create a [`ScanlistBuilder`] reusing the existing allocation from a [`Scanlist`]
     pub fn recycle(mut scanlist: Scanlist) -> Self {
         scanlist.0.clear();
         ScanlistBuilder {
-            v: scanlist.0,
-            x: 0,
+            scanlist: scanlist.0,
+            x_position: 0,
         }
     }
 
     pub fn build(self) -> Scanlist {
         // TODO: check width, do some kind of error?
-        Scanlist(self.v)
+        Scanlist(self.scanlist)
     }
 
     pub fn begin_stripe(&mut self, height: u32) {
-        self.v.push(height);
+        self.scanlist.push(height);
     }
 
     pub fn end_stripe(&mut self) {
-        self.v.push(tmds_scan_stop as u32);
+        self.scanlist.push(tmds_scan_stop as u32);
     }
 
     /// Generate a run of solid color.
     ///
     /// This method only works when aligned to 2-pixel boundaries.
-    pub fn solid(&mut self, count: u32, color: [TmdsPair; 3]) {
-        self.v.extend([
+    pub fn solid(&mut self, width: u32, color: [TmdsPair; 3]) {
+        self.scanlist.extend([
             tmds_scan_solid_tmds as u32,
-            count / 2,
+            width / 2,
             color[0].raw(),
             color[1].raw(),
             color[2].raw(),
         ]);
-        self.x += count;
+        self.x_position += width;
     }
 
     /// Safety note: we take a reference to the palette, but the
     /// lifetime must extend until it is used.
-    pub fn pal_1bpp(&mut self, count: u32, palette: &[TmdsPair]) {
-        self.v.push(tmds_scan_1bpp_pal as u32);
-        self.v.push(count / 2);
-        self.v.push(palette.as_ptr() as u32);
-        self.x += count;
-    }
-}
-
-impl Scanlist {
-    pub fn get(&self) -> &[u32] {
-        &self.0
+    pub fn pal_1bpp(&mut self, width: u32, palette: &'static [TmdsPair]) {
+        self.scanlist.extend([
+            tmds_scan_1bpp_pal as u32,
+            width / 2,
+            palette.as_ptr() as u32,
+        ]);
+        self.x_position += width;
     }
 }

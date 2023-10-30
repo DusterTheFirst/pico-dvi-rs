@@ -233,6 +233,7 @@ impl DisplayList {
     }
 }
 
+/// The system assumes that this is called before [`start_display_list`]
 pub fn init_display_swapcell() {
     // The display list doesn't have to be usable.
     DISPLAY_LIST_SWAPCELL.set_for_client(DisplayList::new(0, 0));

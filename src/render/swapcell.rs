@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
-use cortex_m::asm::{sev, wfe};
+use cortex_m::asm;
 
 /// A cell of storage useful for atomic swaps.
 ///
@@ -45,7 +45,7 @@ impl<T> SwapCell<T> {
 
     pub fn take_blocking(&self) -> T {
         while self.state.load(Ordering::Acquire) != STATE_READY_FOR_CLIENT {
-            wfe();
+            asm::wfe();
         }
         let val = unsafe { self.value.get().read().assume_init() };
         self.state.store(STATE_TAKEN, Ordering::Relaxed);
@@ -62,6 +62,6 @@ impl<T> SwapCell<T> {
             core::mem::swap((*self.value.get()).assume_init_mut(), slot);
         }
         self.state.store(STATE_READY_FOR_CLIENT, Ordering::Release);
-        sev();
+        asm::sev();
     }
 }
