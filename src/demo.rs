@@ -7,6 +7,10 @@ use crate::{
     render::{end_display_list, rgb, start_display_list, BW_PALETTE, FONT_HEIGHT, GLOBAL_PALETTE},
 };
 
+use self::conway::GameOfLife;
+
+mod conway;
+
 const TILE_DATA: &[u32] = &[
     0x44444444, 0x44454444, 0x54545444, 0x44455454, 0x55555555, 0x55555555, 0x74754444, 0x74747474,
     0x44454444, 0x44444444, 0x44454644, 0x44444444, 0x44454644, 0x44444444, 0x44454444, 0x44444444,
@@ -30,8 +34,7 @@ impl<P: PinId> Counter<P> {
     }
 }
 
-fn colorbars<P: PinId>(counter: &mut Counter<P>) {
-    counter.count();
+fn colorbars<P: PinId>(counter: &Counter<P>) {
     let height = 480 / VERTICAL_REPEAT as u32;
     let (mut rb, mut sb) = start_display_list();
     rb.begin_stripe(height - FONT_HEIGHT);
@@ -76,8 +79,7 @@ fn colorbars<P: PinId>(counter: &mut Counter<P>) {
     end_display_list(rb, sb);
 }
 
-fn tiles<P: PinId>(counter: &mut Counter<P>) {
-    counter.count();
+fn tiles<P: PinId>(counter: &Counter<P>) {
     let (mut rb, mut sb) = start_display_list();
     let anim_frame = counter.count % 240;
     let (x_off, y_off) = if anim_frame < 60 {
@@ -127,13 +129,21 @@ fn tiles<P: PinId>(counter: &mut Counter<P>) {
 
 pub fn demo<P: PinId>(led_pin: Pin<P, FunctionSioOutput, PullDown>) -> ! {
     let mut counter = Counter { led_pin, count: 0 };
+    let mut game_of_life = GameOfLife::new();
 
     loop {
-        for _ in 0..120 {
-            colorbars(&mut counter);
-        }
+        // for _ in 0..120 {
+        //     counter.count();
+        //     colorbars(&counter);
+        // }
+        // for _ in 0..240 {
+        //     counter.count();
+        //     tiles(&counter);
+        // }
         for _ in 0..240 {
-            tiles(&mut counter);
+            counter.count();
+            game_of_life.tick();
+            game_of_life.render(&counter);
         }
     }
 }
