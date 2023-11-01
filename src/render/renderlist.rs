@@ -1,3 +1,5 @@
+use core::cmp;
+
 use alloc::vec::Vec;
 
 use super::font::{FONT_BITS, FONT_STRIDE, FONT_X_OFFSETS, FONT_X_WIDTHS};
@@ -61,12 +63,10 @@ impl RenderlistBuilder {
 
     fn tile_slice(&mut self, tile: &[u32], stride: u32, start: u32, end: u32) {
         let next = self.x % 8 + 8 - start;
-        let op = if next > 8 {
-            render_blit_straddle
-        } else if next == 8 {
-            render_blit_out
-        } else {
-            render_blit_simple
+        let op = match next.cmp(&8) {
+            cmp::Ordering::Greater => render_blit_straddle,
+            cmp::Ordering::Equal => render_blit_out,
+            cmp::Ordering::Less => render_blit_simple,
         };
         let tile_ptr = tile.as_ptr() as u32;
         let mut shifts = start * 4;
@@ -126,12 +126,10 @@ impl RenderlistBuilder {
             // TODO: be aware of max width, clamp
             let offset = FONT_X_OFFSETS[glyph as usize] as u32;
             let next = x % 32 + width;
-            let op = if next > 32 {
-                render_blit_straddle
-            } else if next == 32 {
-                render_blit_out
-            } else {
-                render_blit_simple
+            let op = match next.cmp(&32) {
+                cmp::Ordering::Greater => render_blit_straddle,
+                cmp::Ordering::Equal => render_blit_out,
+                cmp::Ordering::Less => render_blit_simple,
             };
             let mut shifts = offset & 31;
             if next > 32 {
@@ -156,6 +154,11 @@ impl RenderlistBuilder {
             }
         }
         x
+    }
+
+    pub fn blit(&mut self, array: &[u32]) {
+        self.v
+            .extend_from_slice(&[render_blit_out as u32, array.as_ptr() as u32, 32, 0]);
     }
 
     pub fn build(self) -> Renderlist {
