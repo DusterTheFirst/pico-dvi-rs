@@ -158,7 +158,7 @@ impl RenderlistBuilder {
 
     pub fn blit(&mut self, array: &[u32]) {
         self.v
-            .extend_from_slice(&[render_blit_out as u32, array.as_ptr() as u32, 32, 0]);
+            .extend_from_slice(&[render_blit_out as u32, array.as_ptr() as u32, 4, 0]);
     }
 
     pub fn build(self) -> Renderlist {
