@@ -108,7 +108,7 @@ impl<Channels: DmaChannelList> DmaChannels<Channels> {
 
     /// Enable interrupts and start the DMA transfers
     pub fn start(&mut self) {
-        self.lane0.data_channel.listen_irq0();
+        self.lane0.data_channel.enable_irq0();
         let mut mask = 0;
         mask |= 1 << self.lane0.control_channel.id();
         mask |= 1 << self.lane1.control_channel.id();
