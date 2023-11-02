@@ -63,12 +63,6 @@ impl GameOfLife {
     pub fn tick(&mut self) {
         self.age += 1;
 
-        // let last = *self.universe.last().unwrap();
-        // for i in (1..self.universe.len()).rev() {
-        //     self.universe[i] = self.universe[i - 1];
-        // }
-        // self.universe[0] = last;
-
         // At each step in time, the following transitions occur:
 
         // Any live cell with fewer than two live neighbours dies, as if by underpopulation.
@@ -155,33 +149,36 @@ impl GameOfLife {
     pub(super) fn render<P: PinId>(&self, counter: &Counter<P>) {
         let height = 480 / VERTICAL_REPEAT as u32;
         let width = 640;
+        let background = xrgb(BACKGROUND);
         let (mut rb, mut sb) = start_display_list();
 
-        // --- 224 ---
-        // 304  32x32 304
-        // --- 194 ---
-        // 15
-        // 15
+        let horizontal_padding = width - BOARD_WIDTH as u32;
+        let padding_left = horizontal_padding / 2;
+        let padding_right = padding_left + (horizontal_padding & 0b1); // Deal with odd padding
 
-        rb.begin_stripe(224);
+        let vertical_padding = height - BOARD_HEIGHT as u32;
+        let padding_top = vertical_padding / 2;
+        let padding_bottom = padding_top + (vertical_padding & 0b1); // Deal with odd padding
+
+        rb.begin_stripe(padding_top);
         rb.end_stripe();
-        sb.begin_stripe(224);
-        sb.solid(width, xrgb(BACKGROUND));
+        sb.begin_stripe(padding_top);
+        sb.solid(width, background);
         sb.end_stripe();
 
-        rb.begin_stripe(32);
+        rb.begin_stripe(BOARD_HEIGHT as u32);
         rb.blit(&self.universe);
         rb.end_stripe();
-        sb.begin_stripe(32);
-        sb.solid(304, xrgb(BACKGROUND));
+        sb.begin_stripe(BOARD_HEIGHT as u32);
+        sb.solid(padding_left, background);
         sb.pal_1bpp(32, &CONWAY_PALETTE); // TODO: display game of life board here
-        sb.solid(304, xrgb(BACKGROUND));
+        sb.solid(padding_right, background);
         sb.end_stripe();
 
-        rb.begin_stripe(194);
+        rb.begin_stripe(padding_bottom - FONT_HEIGHT * 2);
         rb.end_stripe();
-        sb.begin_stripe(194);
-        sb.solid(width, xrgb(BACKGROUND));
+        sb.begin_stripe(padding_bottom - FONT_HEIGHT * 2);
+        sb.solid(width, background);
         sb.end_stripe();
 
         {
@@ -192,7 +189,7 @@ impl GameOfLife {
             rb.end_stripe();
             sb.begin_stripe(FONT_HEIGHT);
             sb.pal_1bpp(text_width, &CONWAY_TEXT_PALETTE);
-            sb.solid(width - text_width, xrgb(BACKGROUND));
+            sb.solid(width - text_width, background);
             sb.end_stripe();
             rb.begin_stripe(FONT_HEIGHT);
             let text = format!("Hello pico-dvi-rs, frame {}", counter.count);
