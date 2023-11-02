@@ -144,9 +144,8 @@ pub fn demo<P: PinId>(led_pin: Pin<P, FunctionSioOutput, PullDown>) -> ! {
             counter.count();
 
             if i % 10 == 0 {
-                // game_of_life.tick();
+                game_of_life.tick();
             }
-
             game_of_life.render(&counter);
         }
     }

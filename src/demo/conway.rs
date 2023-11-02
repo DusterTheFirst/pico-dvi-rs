@@ -11,8 +11,8 @@ use crate::{
 };
 
 // Sadly these can not be generic on GameOfLife struct due to limitations with const-generics
-const BOARD_WIDTH: usize = 120;
-const BOARD_HEIGHT: usize = 120;
+const BOARD_WIDTH: usize = 420;
+const BOARD_HEIGHT: usize = 210;
 
 const fn div_ceil(a: usize, b: usize) -> usize {
     (a + b - 1) / b
@@ -22,7 +22,7 @@ const BOARD_WIDTH_WORDS: usize = div_ceil(BOARD_WIDTH, 32);
 
 pub struct GameOfLife {
     age: u32,
-    universe: [u32; BOARD_WIDTH_WORDS * BOARD_HEIGHT],
+    universe: [u32; BOARD_WIDTH_WORDS * BOARD_HEIGHT], // TODO: pack?
 }
 
 impl GameOfLife {
@@ -43,6 +43,8 @@ impl GameOfLife {
                 .chain(core::iter::repeat(0).take(BOARD_WIDTH_WORDS - div_ceil(bytes.len(), 32)))
         });
 
+        defmt::info!("{=usize}", core::mem::size_of::<Self>());
+
         GameOfLife {
             age: 0,
             universe: core::array::from_fn(|_| rows.next().unwrap_or(0xaaaaaaaa)),
@@ -52,40 +54,61 @@ impl GameOfLife {
     pub fn tick(&mut self) {
         self.age += 1;
 
-        // At each step in time, the following transitions occur:
+        let mut previous_new_line = [0; BOARD_WIDTH_WORDS];
+        let mut new_line = [0; BOARD_WIDTH_WORDS];
 
-        // Any live cell with fewer than two live neighbours dies, as if by underpopulation.
-        // Any live cell with two or three live neighbours lives on to the next generation.
-        // Any live cell with more than three live neighbours dies, as if by overpopulation.
-        // Any dead cell with exactly three live neighbours becomes a live cell, as if by reproduction.
+        for row in 0..BOARD_HEIGHT {
+            // FIXME: very jank indexing
+            let previous_line = if row != 0 {
+                self.universe[(row - 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+                    .try_into()
+                    .unwrap()
+            } else {
+                &[0; BOARD_WIDTH_WORDS]
+            };
+            let current_line = &self.universe[row * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+                .try_into()
+                .unwrap();
+            let next_line = if row != BOARD_HEIGHT - 1 {
+                self.universe[(row + 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+                    .try_into()
+                    .unwrap()
+            } else {
+                &[0; BOARD_WIDTH_WORDS]
+            };
 
-        // These rules, which compare the behaviour of the automaton to real life, can be condensed into the following:
+            fn new_state(
+                (previous_line, current_line, next_line): (
+                    &[u32; BOARD_WIDTH_WORDS],
+                    &[u32; BOARD_WIDTH_WORDS],
+                    &[u32; BOARD_WIDTH_WORDS],
+                ),
+                mask: impl Fn(u32, u32, u32) -> u32,
+                word: usize,
+                byte: usize,
+                new_line: &mut [u32; BOARD_WIDTH_WORDS],
+            ) {
+                let previous_masked = mask(
+                    word.checked_sub(1).map(|i| previous_line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
+                    previous_line[word],
+                    previous_line.get(word + 1).copied().unwrap_or(0),
+                );
+                let current_masked = mask(
+                    word.checked_sub(1).map(|i| current_line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
+                    current_line[word],
+                    current_line.get(word + 1).copied().unwrap_or(0),
+                );
+                let next_masked = mask(
+                    word.checked_sub(1).map(|i| next_line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
+                    next_line[word],
+                    next_line.get(word + 1).copied().unwrap_or(0),
+                );
 
-        // Any live cell with two or three live neighbours survives.
-        // Any dead cell with three live neighbours becomes a live cell.
-        // All other live cells die in the next generation. Similarly, all other dead cells stay dead.
-
-        let mut previous_new_line = 0;
-        let mut new_line = 0;
-
-        for row in 0..self.universe.len() {
-            let previous_line = row.checked_sub(1).map(|i| self.universe[i]).unwrap_or(0);
-            let current_line = self.universe[row];
-            let next_line = self.universe.get(row + 1).copied().unwrap_or(0);
-
-            let masks = core::iter::once(0xc0000000)
-                .chain((0..(core::mem::size_of::<u32>() * 8 - 1)).map(|i| 0xe0000000 >> i))
-                .enumerate();
-
-            for (column, mask) in masks {
-                let previous_masked = previous_line & mask;
-                let current_masked = current_line & mask;
-                let next_masked = next_line & mask;
                 let neighborhood = previous_masked.count_ones()
                     + current_masked.count_ones()
                     + next_masked.count_ones();
 
-                let previous_state = (current_line >> (31 - column)) & 0x1;
+                let previous_state = (current_line[word] >> byte) & 0x1;
 
                 let new_state = match neighborhood {
                     3 => 1,
@@ -95,31 +118,61 @@ impl GameOfLife {
 
                 // if new_state != previous_state {
                 //     defmt::debug!(
-                //         "{=usize}/{=usize}: {=u32} => {=u32} @ {=u32}\n\n{=u32:032b}\n\n{=u32:032b}\t{=u32:032b}\n{=u32:032b}\t{=u32:032b}\n{=u32:032b}\t{=u32:032b}",
-                //         row,
-                //         column,
+                //         "{=usize}+{=usize}: {=u32} => {=u32} N{=u32}\n\n[10987654321098765432109876543210]\n{=[?; 2]:032b}\t{=u32:032b}\n{=[?; 2]:032b}\t{=u32:032b}\n{=[?; 2]:032b}\t{=u32:032b}",
+                //         word,
+                //         byte,
 
                 //         previous_state,
                 //         new_state,
 
                 //         neighborhood,
-                //         mask,
 
                 //         previous_line, previous_masked,
                 //         current_line, current_masked,
-                //         next_masked, next_masked
+                //         next_line, next_masked
                 //     );
                 // }
 
-                new_line = (new_line << 1) + new_state;
+                new_line[word] = (new_line[word] << 1) + new_state;
+            }
+
+            // pp ... ppp ppn pnn nnn ... nn
+            for word in 0..BOARD_WIDTH_WORDS {
+                new_state(
+                    (previous_line, current_line, next_line),
+                    |pre, cur, next| pre & 0b001 | cur & (0b110 << 30),
+                    word,
+                    31,
+                    &mut new_line,
+                );
+                for i in (1..=30).rev() {
+                    new_state(
+                        (previous_line, current_line, next_line),
+                        |pre, cur, next| cur & (0b111 << (i - 1)),
+                        word,
+                        i,
+                        &mut new_line,
+                    );
+                }
+                new_state(
+                    (previous_line, current_line, next_line),
+                    |pre, cur, next| cur & 0b011 | next & (0b100 << 31),
+                    word,
+                    0,
+                    &mut new_line,
+                );
             }
 
             if let Some(i) = row.checked_sub(1) {
-                self.universe[i] = previous_new_line;
+                self.universe[i * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+                    .copy_from_slice(&previous_new_line);
             }
             previous_new_line = core::mem::take(&mut new_line);
         }
-        // panic!()
+
+        // Apply the last new line
+        self.universe[(BOARD_HEIGHT - 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+            .copy_from_slice(&previous_new_line);
     }
 }
 
@@ -156,7 +209,10 @@ impl GameOfLife {
         sb.end_stripe();
 
         rb.begin_stripe(BOARD_HEIGHT as u32);
-        rb.blit(&self.universe, BOARD_WIDTH_WORDS as u32 * 4);
+        // FIXME: new renderlist instruction?
+        for i in 0..BOARD_WIDTH_WORDS {
+            rb.blit(&self.universe[i..], BOARD_WIDTH_WORDS as u32 * 4);
+        }
         rb.end_stripe();
         sb.begin_stripe(BOARD_HEIGHT as u32);
         sb.solid(padding_left, background);
