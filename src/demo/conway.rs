@@ -10,53 +10,42 @@ use crate::{
     },
 };
 
-pub struct GameOfLife {
-    age: u32,
-    universe: [u32; BOARD_WIDTH / 32 * BOARD_HEIGHT],
+// Sadly these can not be generic on GameOfLife struct due to limitations with const-generics
+const BOARD_WIDTH: usize = 120;
+const BOARD_HEIGHT: usize = 120;
+
+const fn div_ceil(a: usize, b: usize) -> usize {
+    (a + b - 1) / b
 }
 
-const BOARD_WIDTH: usize = 32;
-const BOARD_HEIGHT: usize = 32;
+const BOARD_WIDTH_WORDS: usize = div_ceil(BOARD_WIDTH, 32);
+
+pub struct GameOfLife {
+    age: u32,
+    universe: [u32; BOARD_WIDTH_WORDS * BOARD_HEIGHT],
+}
 
 impl GameOfLife {
     // TODO: Seed input?
-    pub fn new() -> Self {
+    pub fn new(universe: &str) -> Self {
+        let mut rows = universe.lines().flat_map(|line| {
+            let bytes = line.as_bytes();
+
+            bytes
+                .chunks(32)
+                .map(|word| {
+                    word.iter().fold(0, |word, byte| match byte {
+                        b'.' => word >> 1,
+                        b'*' => (word >> 1) | 0x80000000,
+                        _ => unimplemented!(),
+                    })
+                })
+                .chain(core::iter::repeat(0).take(BOARD_WIDTH_WORDS - div_ceil(bytes.len(), 32)))
+        });
+
         GameOfLife {
             age: 0,
-            universe: [
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b01100011000011000110000100000000u32.reverse_bits(),
-                0b01100100100100100101001010000000u32.reverse_bits(),
-                0b00000011000010100010000100000000u32.reverse_bits(),
-                0b00000000000001000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00100000000011000000000000000000u32.reverse_bits(),
-                0b00100001110011000000000000000000u32.reverse_bits(),
-                0b00100011100000110000000000000000u32.reverse_bits(),
-                0b00000000000000110000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b01100011000011000110000100000000u32.reverse_bits(),
-                0b01100100100100100101001010000000u32.reverse_bits(),
-                0b00000011000010100010000100000000u32.reverse_bits(),
-                0b00000000000001000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-                0b00000000000000000000000000000000u32.reverse_bits(),
-            ],
+            universe: core::array::from_fn(|_| rows.next().unwrap_or(0xaaaaaaaa)),
         }
     }
 
@@ -167,11 +156,11 @@ impl GameOfLife {
         sb.end_stripe();
 
         rb.begin_stripe(BOARD_HEIGHT as u32);
-        rb.blit(&self.universe);
+        rb.blit(&self.universe, BOARD_WIDTH_WORDS as u32 * 4);
         rb.end_stripe();
         sb.begin_stripe(BOARD_HEIGHT as u32);
         sb.solid(padding_left, background);
-        sb.pal_1bpp(32, &CONWAY_PALETTE); // TODO: display game of life board here
+        sb.pal_1bpp(BOARD_WIDTH as u32, &CONWAY_PALETTE); // TODO: display game of life board here
         sb.solid(padding_right, background);
         sb.end_stripe();
 

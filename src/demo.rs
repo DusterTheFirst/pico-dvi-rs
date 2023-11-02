@@ -129,7 +129,7 @@ fn tiles<P: PinId>(counter: &Counter<P>) {
 
 pub fn demo<P: PinId>(led_pin: Pin<P, FunctionSioOutput, PullDown>) -> ! {
     let mut counter = Counter { led_pin, count: 0 };
-    let mut game_of_life = GameOfLife::new();
+    let mut game_of_life = GameOfLife::new(include_str!("demo/universe.txt"));
 
     loop {
         // for _ in 0..120 {
@@ -144,7 +144,7 @@ pub fn demo<P: PinId>(led_pin: Pin<P, FunctionSioOutput, PullDown>) -> ! {
             counter.count();
 
             if i % 10 == 0 {
-                game_of_life.tick();
+                // game_of_life.tick();
             }
 
             game_of_life.render(&counter);
