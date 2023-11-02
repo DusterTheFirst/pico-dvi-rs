@@ -12,20 +12,15 @@ use cortex_m::peripheral::NVIC;
 use defmt::{dbg, info};
 use dvi::dma::DmaChannelList;
 use embedded_alloc::Heap;
-use rp_pico::{
-    hal::{
-        dma::{Channel, DMAExt, CH0, CH1, CH2, CH3, CH4, CH5},
-        gpio::PinState,
-        multicore::{Multicore, Stack},
-        pwm,
-        sio::{Sio, SioFifo},
-        watchdog::Watchdog,
-    },
-    pac::{self, interrupt},
-    Pins,
+use rp2040_hal::{
+    dma::{Channel, DMAExt, CH0, CH1, CH2, CH3, CH4, CH5},
+    gpio::{FunctionSioOutput, Pin, PinId, PullDown},
+    multicore::{Multicore, Stack},
+    pac::{self, interrupt, Interrupt},
+    pwm::{self, ValidPwmOutputPin},
+    sio::SioFifo,
+    watchdog::Watchdog,
 };
-
-use pac::Interrupt;
 
 use crate::{
     clock::init_clocks,
@@ -39,12 +34,12 @@ use crate::{
     render::{init_4bpp_palette, init_display_swapcell, render_line, GLOBAL_PALETTE},
 };
 
-mod clock;
-mod demo;
-mod dvi;
-mod link;
-mod render;
-mod scanlist;
+pub mod clock;
+pub mod demo;
+pub mod dvi;
+pub mod link;
+pub mod render;
+pub mod scanlist;
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
@@ -81,18 +76,51 @@ static mut CORE1_STACK: Stack<256> = Stack::new();
 
 static mut FIFO: MaybeUninit<SioFifo> = MaybeUninit::uninit();
 
-// Separate macro annotated function to make rust-analyzer fixes apply better
-#[rp_pico::entry]
-fn macro_entry() -> ! {
-    entry();
-}
-
 const PALETTE: &[u32] = &[
     0x0, 0xffffff, 0x9d9d9d, 0xe06f8b, 0xbe2633, 0x493c2b, 0xa46422, 0xeb8931, 0xf7e26b, 0xa3ce27,
     0x44891a, 0x2f484e, 0x1b2632, 0x5784, 0x31a2f2, 0xb2dcef,
 ];
 
-fn entry() -> ! {
+pub fn core0_main<
+    const XOSC_CRYSTAL_FREQ: u32,
+    F,
+    LED,
+    RedPos,
+    RedNeg,
+    GreenPos,
+    GreenNeg,
+    BluePos,
+    BlueNeg,
+    SliceId,
+    ClockPos,
+    ClockNeg,
+>(
+    pins: F,
+) -> !
+where
+    F: FnOnce(
+        pac::SIO,
+        pac::IO_BANK0,
+        pac::PADS_BANK0,
+        pac::PWM,
+        &mut pac::RESETS,
+    ) -> (
+        Pin<LED, FunctionSioOutput, PullDown>,
+        DviDataPins<RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>,
+        DviClockPins<SliceId, ClockPos, ClockNeg>,
+        SioFifo,
+    ),
+    LED: PinId,
+    RedPos: PinId + Send + 'static,
+    RedNeg: PinId + Send + 'static,
+    GreenPos: PinId + Send + 'static,
+    GreenNeg: PinId + Send + 'static,
+    BluePos: PinId + Send + 'static,
+    BlueNeg: PinId + Send + 'static,
+    SliceId: pwm::SliceId + Send + 'static,
+    ClockPos: PinId + ValidPwmOutputPin<SliceId, pwm::A> + Send + 'static,
+    ClockNeg: PinId + ValidPwmOutputPin<SliceId, pwm::B> + Send + 'static,
+{
     info!("Program start");
     {
         const HEAP_SIZE: usize = 128 * 1024;
@@ -106,12 +134,11 @@ fn entry() -> ! {
     sysinfo(&peripherals.SYSINFO);
 
     let mut watchdog = Watchdog::new(peripherals.WATCHDOG);
-    let single_cycle_io = Sio::new(peripherals.SIO);
 
     let timing = VGA_TIMING;
 
     // External high-speed crystal on the pico board is 12Mhz
-    let _clocks = init_clocks(
+    let _clocks = init_clocks::<XOSC_CRYSTAL_FREQ>(
         peripherals.XOSC,
         peripherals.ROSC,
         peripherals.CLOCKS,
@@ -122,38 +149,13 @@ fn entry() -> ! {
         timing.bit_clk,
     );
 
-    let pins = Pins::new(
+    let (led_pin, data_pins, clock_pins, mut sio_fifo) = pins(
+        peripherals.SIO,
         peripherals.IO_BANK0,
         peripherals.PADS_BANK0,
-        single_cycle_io.gpio_bank0,
+        peripherals.PWM,
         &mut peripherals.RESETS,
     );
-
-    let led_pin = pins.led.into_push_pull_output_in_state(PinState::Low);
-
-    let pwm_slices = pwm::Slices::new(peripherals.PWM, &mut peripherals.RESETS);
-    let dma = peripherals.DMA.split(&mut peripherals.RESETS);
-
-    let (data_pins, clock_pins) = {
-        (
-            DviDataPins {
-                // 0
-                blue_pos: pins.gpio12.into_function(),
-                blue_neg: pins.gpio13.into_function(),
-                // 1
-                green_pos: pins.gpio10.into_function(),
-                green_neg: pins.gpio11.into_function(),
-                // 2
-                red_pos: pins.gpio16.into_function(),
-                red_neg: pins.gpio17.into_function(),
-            },
-            DviClockPins {
-                clock_pos: pins.gpio14.into_function(),
-                clock_neg: pins.gpio15.into_function(),
-                pwm_slice: pwm_slices.pwm7,
-            },
-        )
-    };
 
     let serializer = DviSerializer::new(
         peripherals.PIO0,
@@ -162,6 +164,7 @@ fn entry() -> ! {
         clock_pins,
     );
 
+    let dma = peripherals.DMA.split(&mut peripherals.RESETS);
     let dma_channels = DmaChannels::new(
         (dma.ch0, dma.ch1, dma.ch2, dma.ch3, dma.ch4, dma.ch5),
         serializer.tx(),
@@ -173,8 +176,8 @@ fn entry() -> ! {
         inst.setup_dma();
         inst.start();
     }
-    let mut fifo = single_cycle_io.fifo;
-    let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
+
+    let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut sio_fifo);
     let cores = mc.cores();
     let core1 = &mut cores[1];
     core1
@@ -185,7 +188,7 @@ fn entry() -> ! {
     // Safety: enable interrupt for fifo to receive line render requests.
     // Transfer ownership of this end of the fifo to the interrupt handler.
     unsafe {
-        FIFO = MaybeUninit::new(fifo);
+        FIFO = MaybeUninit::new(sio_fifo);
         NVIC::unmask(Interrupt::SIO_IRQ_PROC0);
     }
     init_display_swapcell(640);

@@ -3,6 +3,17 @@
 version = 3
 
 [[package]]
+name = "adafruit-feather-rp2040"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d5dcc126017a99c6754575dd4c4bb47625e187179b5bea776c31bf4b9235240"
+dependencies = [
+ "cortex-m-rt",
+ "rp2040-boot2",
+ "rp2040-hal",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -606,6 +617,7 @@ dependencies = [
 name = "pico-dvi-rs"
 version = "0.0.0"
 dependencies = [
+ "adafruit-feather-rp2040",
  "cortex-m",
  "cortex-m-rt",
  "defmt",
@@ -618,6 +630,7 @@ dependencies = [
  "pio",
  "pio-proc",
  "rp-pico",
+ "rp2040-hal",
 ]
 
 [[package]]
