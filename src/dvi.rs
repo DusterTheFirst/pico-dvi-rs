@@ -5,7 +5,7 @@ pub mod tmds;
 
 use alloc::boxed::Box;
 use cortex_m::peripheral::NVIC;
-use rp_pico::hal::{
+use rp2040_bsp::hal::{
     gpio::PinId,
     pac::Interrupt,
     pio,

@@ -9,7 +9,7 @@ pub use palette::{init_4bpp_palette, PaletteEntry, BW_PALETTE, GLOBAL_PALETTE};
 
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
-use rp_pico::{
+use rp2040_bsp::{
     hal::{sio::SioFifo, Sio},
     pac,
 };

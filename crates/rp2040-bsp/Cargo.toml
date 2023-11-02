@@ -1,0 +1,21 @@
+[package]
+name = "rp2040-bsp"
+
+description = "Generic rp2040 board support package crate"
+version     = "0.0.0"
+
+edition = "2021"
+publish = false
+
+[dependencies]
+# Board Support Crates (choose one)
+adafruit-feather-rp2040 = { version = "0.7.0", features = ["rom-v2-intrinsics"], optional = true }
+rp-pico                 = { version = "0.8.0", features = ["rom-v2-intrinsics"], optional = true }
+
+[features]
+default           = ["rom-v2-intrinsics"]
+rom-v2-intrinsics = ["adafruit-feather-rp2040?/rom-v2-intrinsics", "rp-pico?/rom-v2-intrinsics"]
+
+# Board Support Crates (choose one)
+adafruit-feather-rp2040 = ["dep:adafruit-feather-rp2040"]
+rp-pico                 = ["dep:rp-pico"]

@@ -3,7 +3,7 @@
 //! The PicoDVI source does not have a separate file for DMA; it's mostly
 //! split between dvi and dvi_timing.
 
-use rp_pico::hal::{
+use rp2040_bsp::hal::{
     dma::SingleChannel,
     pio::{Tx, ValidStateMachine},
 };

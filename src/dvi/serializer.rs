@@ -1,5 +1,5 @@
 use embedded_hal::PwmPin;
-use rp_pico::{
+use rp2040_bsp::{
     hal::{
         gpio::{
             FunctionPio0, FunctionPwm, OutputDriveStrength, OutputOverride, OutputSlewRate, Pin,
