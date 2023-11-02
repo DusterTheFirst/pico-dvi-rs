@@ -140,9 +140,13 @@ pub fn demo<P: PinId>(led_pin: Pin<P, FunctionSioOutput, PullDown>) -> ! {
         //     counter.count();
         //     tiles(&counter);
         // }
-        for _ in 0..240 {
+        for i in 0..240 {
             counter.count();
-            game_of_life.tick();
+
+            if i % 10 == 0 {
+                game_of_life.tick();
+            }
+
             game_of_life.render(&counter);
         }
     }
