@@ -156,9 +156,14 @@ impl RenderlistBuilder {
         x
     }
 
-    pub fn blit(&mut self, array: &[u32], stride: u32) {
-        self.v
-            .extend_from_slice(&[render_blit_out as u32, array.as_ptr() as u32, stride, 0]);
+    pub fn blit_1bpp(&mut self, array: &[u32], words: usize, stride: u32) {
+        // FIXME: new renderlist instruction?
+        self.v.extend(
+            core::iter::repeat(render_blit_out as u32)
+                .take(words)
+                .enumerate()
+                .flat_map(|(word, op)| [op, array[word..].as_ptr() as u32, stride, 0]), // FIXME: some way to make sure we pass the right amount of arguments to these functions?
+        );
     }
 
     pub fn build(self) -> Renderlist {

@@ -14,8 +14,8 @@ use crate::{
 const BOARD_WIDTH: usize = 420;
 const BOARD_HEIGHT: usize = 210;
 
-const fn div_ceil(a: usize, b: usize) -> usize {
-    (a + b - 1) / b
+const fn div_ceil(numerator: usize, denominator: usize) -> usize {
+    (numerator + denominator - 1) / denominator
 }
 
 const BOARD_WIDTH_WORDS: usize = div_ceil(BOARD_WIDTH, 32);
@@ -26,7 +26,6 @@ pub struct GameOfLife {
 }
 
 impl GameOfLife {
-    // TODO: Seed input?
     pub fn new(universe: &str) -> Self {
         let mut rows = universe.lines().flat_map(|line| {
             let bytes = line.as_bytes();
@@ -43,7 +42,23 @@ impl GameOfLife {
                 .chain(core::iter::repeat(0).take(BOARD_WIDTH_WORDS - div_ceil(bytes.len(), 32)))
         });
 
-        defmt::info!("{=usize}", core::mem::size_of::<Self>());
+        let actual_size = core::mem::size_of::<Self>();
+        let actual_size_words = div_ceil(actual_size, 4);
+
+        let line_waste = BOARD_WIDTH % 32;
+        let total_waste = line_waste * BOARD_HEIGHT;
+        let total_waste_words = div_ceil(total_waste, 32);
+
+        let ideal_size = div_ceil(BOARD_WIDTH * BOARD_HEIGHT, 8) + 4;
+        let ideal_size_words = div_ceil(ideal_size, 4);
+
+        defmt::info!(
+            "size_of::<GameOfLife>() = {=usize} words\nline_waste = {=usize} bits\nideal_size = {=usize} words\ntotal_waste = {=usize} words",
+            actual_size_words,
+            line_waste,
+            ideal_size_words,
+            total_waste_words
+        );
 
         GameOfLife {
             age: 0,
@@ -140,7 +155,7 @@ impl GameOfLife {
             for word in 0..BOARD_WIDTH_WORDS {
                 new_state(
                     (previous_line, current_line, next_line),
-                    |pre, cur, next| pre & 0b001 | cur & (0b110 << 30),
+                    |pre, cur, _| pre & 0b001 | cur & (0b110 << 30),
                     word,
                     31,
                     &mut new_line,
@@ -148,7 +163,7 @@ impl GameOfLife {
                 for i in (1..=30).rev() {
                     new_state(
                         (previous_line, current_line, next_line),
-                        |pre, cur, next| cur & (0b111 << (i - 1)),
+                        |_, cur, _| cur & (0b111 << (i - 1)),
                         word,
                         i,
                         &mut new_line,
@@ -156,7 +171,7 @@ impl GameOfLife {
                 }
                 new_state(
                     (previous_line, current_line, next_line),
-                    |pre, cur, next| cur & 0b011 | next & (0b100 << 31),
+                    |_, cur, next| cur & 0b011 | next & (0b100 << 31),
                     word,
                     0,
                     &mut new_line,
@@ -209,14 +224,15 @@ impl GameOfLife {
         sb.end_stripe();
 
         rb.begin_stripe(BOARD_HEIGHT as u32);
-        // FIXME: new renderlist instruction?
-        for i in 0..BOARD_WIDTH_WORDS {
-            rb.blit(&self.universe[i..], BOARD_WIDTH_WORDS as u32 * 4);
-        }
+        rb.blit_1bpp(
+            &self.universe,
+            BOARD_WIDTH_WORDS,
+            BOARD_WIDTH_WORDS as u32 * 4,
+        );
         rb.end_stripe();
         sb.begin_stripe(BOARD_HEIGHT as u32);
         sb.solid(padding_left, background);
-        sb.pal_1bpp(BOARD_WIDTH as u32, &CONWAY_PALETTE); // TODO: display game of life board here
+        sb.pal_1bpp(BOARD_WIDTH as u32, &CONWAY_PALETTE);
         sb.solid(padding_right, background);
         sb.end_stripe();
 
