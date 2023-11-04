@@ -26,24 +26,100 @@ pub struct GameOfLife {
 }
 
 impl GameOfLife {
-    pub fn new(universe: &str) -> Self {
-        let mut rows = universe.lines().flat_map(|line| {
-            let bytes = line.as_bytes();
+    pub fn new(universe_seed: &str) -> Self {
+        let center_x = BOARD_WIDTH / 2;
+        let center_y = BOARD_HEIGHT / 2;
 
-            bytes
-                .chunks(32)
-                .map(|word| {
-                    word.iter()
-                        .copied()
-                        .chain(core::iter::repeat(b'.').take(32 - word.len()))
-                        .fold(0, |word, byte| match byte {
-                            b'.' => word >> 1,
-                            b'*' => (word >> 1) | 0x80000000,
-                            _ => unimplemented!(),
-                        })
+        let mut universe = [0; BOARD_WIDTH_WORDS * BOARD_HEIGHT];
+
+        let mut current_x = center_x;
+        let mut current_y = center_y;
+
+        for line in universe_seed.lines() {
+            if line.is_empty() {
+                continue;
+            }
+
+            if let Some(position) = line.strip_prefix("#P").map(str::trim) {
+                let (x, y): (i32, i32) = position
+                    .split_once(' ')
+                    .map(|(x, y)| (x.parse().unwrap(), y.parse().unwrap()))
+                    .unwrap();
+
+                current_x = (center_x as i32 + x) as usize;
+                current_y = (center_y as i32 + y) as usize;
+
+                continue;
+            }
+
+            let line = line.as_bytes();
+            let current_x_word = current_x / 32;
+            let current_x_bit = current_x % 32;
+            let line_words = div_ceil(current_x_bit + line.len(), 32);
+
+            let (unaligned_prefix, line) =
+                line.split_at(usize::min(32 - current_x_bit, line.len()));
+            let (aligned, unaligned_suffix) = line.split_at(line.len() - line.len() % 32);
+
+            // defmt::dbg!(unaligned_prefix);
+            // defmt::dbg!(aligned);
+            // defmt::dbg!(unaligned_suffix);
+
+            fn chars_to_byte(chars: &[u8]) -> u32 {
+                chars.iter().fold(0, |word, byte| match byte {
+                    b'.' => word >> 1,
+                    b'*' => (word >> 1) | 0x80000000u32,
+                    _ => unimplemented!(),
                 })
-                .chain(core::iter::repeat(0).take(BOARD_WIDTH_WORDS - div_ceil(bytes.len(), 32)))
-        });
+            }
+
+            let universe = &mut universe[current_x_word + current_y * BOARD_WIDTH_WORDS..];
+
+            let starting_word = if !unaligned_prefix.is_empty() {
+                let unaligned_prefix = chars_to_byte(unaligned_prefix);
+                universe[0] |= unaligned_prefix; // FIXME: zero these bits out first
+
+                1
+            } else {
+                0
+            };
+
+            let ending_word = if !unaligned_suffix.is_empty() {
+                let unaligned_suffix =
+                    chars_to_byte(unaligned_suffix) >> (32 - unaligned_suffix.len());
+                universe[line_words - 1] |= unaligned_suffix; // FIXME: zero these bits out first
+
+                line_words - 1
+            } else {
+                line_words
+            };
+
+            let mut aligned = aligned.chunks_exact(32).map(chars_to_byte);
+            universe[starting_word..ending_word].fill_with(|| aligned.next().unwrap());
+
+            // defmt::dbg!(starting_word, ending_word, words);
+            // defmt::debug!("{=[?]:032b}", &universe[..line_words]);
+
+            current_y += 1;
+        }
+
+        // let mut rows = universe_seed.lines().flat_map(|line| {
+        //     let bytes = line.as_bytes();
+
+        //     bytes
+        //         .chunks(32)
+        //         .map(|word| {
+        //             word.iter()
+        //                 .copied()
+        //                 .chain(core::iter::repeat(b'.').take(32 - word.len()))
+        //                 .fold(0, |word, byte| match byte {
+        //                     b'.' => word >> 1,
+        //                     b'*' => (word >> 1) | 0x80000000,
+        //                     _ => unimplemented!(),
+        //                 })
+        //         })
+        //         .chain(core::iter::repeat(0).take(BOARD_WIDTH_WORDS - div_ceil(bytes.len(), 32)))
+        // });
 
         let actual_size = core::mem::size_of::<Self>();
         let actual_size_words = div_ceil(actual_size, 4);
@@ -63,10 +139,7 @@ impl GameOfLife {
             total_waste_words
         );
 
-        GameOfLife {
-            age: 0,
-            universe: core::array::from_fn(|_| rows.next().unwrap_or(0)),
-        }
+        GameOfLife { age: 0, universe }
     }
 
     pub fn tick(&mut self) {
@@ -96,87 +169,61 @@ impl GameOfLife {
             };
 
             fn new_state(
-                (previous_line, current_line, next_line): (
-                    &[u32; BOARD_WIDTH_WORDS],
-                    &[u32; BOARD_WIDTH_WORDS],
-                    &[u32; BOARD_WIDTH_WORDS],
-                ),
-                mask: impl Fn(u32, u32, u32) -> u32,
+                lines: [&[u32; BOARD_WIDTH_WORDS]; 3],
+                mask: [u32; 3],
                 word: usize,
-                byte: usize,
+                bit: usize,
                 new_line: &mut [u32; BOARD_WIDTH_WORDS],
             ) {
-                let previous_masked = mask(
-                    word.checked_sub(1).map(|i| previous_line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
-                    previous_line[word],
-                    previous_line.get(word + 1).copied().unwrap_or(0),
-                );
-                let current_masked = mask(
-                    word.checked_sub(1).map(|i| current_line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
-                    current_line[word],
-                    current_line.get(word + 1).copied().unwrap_or(0),
-                );
-                let next_masked = mask(
-                    word.checked_sub(1).map(|i| next_line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
-                    next_line[word],
-                    next_line.get(word + 1).copied().unwrap_or(0),
-                );
+                let apply_mask = |line: &[u32; BOARD_WIDTH_WORDS]| {
+                    [
+                        word.checked_sub(1).map(|i| line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
+                        line[word],
+                        line.get(word + 1).copied().unwrap_or(0),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, word)| word & mask[i])
+                };
 
-                let neighborhood = previous_masked.count_ones()
-                    + current_masked.count_ones()
-                    + next_masked.count_ones();
-
-                let previous_state = (current_line[word] >> byte) & 0x1;
+                let neighborhood = lines
+                    .into_iter()
+                    .flat_map(apply_mask)
+                    .map(u32::count_ones)
+                    .sum();
 
                 let new_state = match neighborhood {
                     3 => 1,
-                    4 => previous_state,
+                    4 => (lines[1][word] >> bit) & 0x1,
                     _ => 0,
                 };
 
-                // if new_state != previous_state {
-                //     defmt::debug!(
-                //         "{=usize}+{=usize}: {=u32} => {=u32} N{=u32}\n\n[10987654321098765432109876543210]\n{=[?; 2]:032b}\t{=u32:032b}\n{=[?; 2]:032b}\t{=u32:032b}\n{=[?; 2]:032b}\t{=u32:032b}",
-                //         word,
-                //         byte,
-
-                //         previous_state,
-                //         new_state,
-
-                //         neighborhood,
-
-                //         previous_line, previous_masked,
-                //         current_line, current_masked,
-                //         next_line, next_masked
-                //     );
-                // }
-
-                new_line[word] = (new_line[word] << 1) + new_state;
+                new_line[word] = (new_line[word] >> 1) + (new_state << 31);
             }
 
             // pp ... ppp ppn pnn nnn ... nn
             for word in 0..BOARD_WIDTH_WORDS {
                 new_state(
-                    (previous_line, current_line, next_line),
-                    |pre, cur, _| pre & 0b001 | cur & (0b110 << 30),
+                    [previous_line, current_line, next_line],
+                    [0b1 << 31, 0b11, 0],
                     word,
-                    31,
+                    0,
                     &mut new_line,
                 );
-                for i in (1..=30).rev() {
+                for i in 1..=30 {
                     new_state(
-                        (previous_line, current_line, next_line),
-                        |_, cur, _| cur & (0b111 << (i - 1)),
+                        [previous_line, current_line, next_line],
+                        [0, 0b111 << (i - 1), 0],
                         word,
                         i,
                         &mut new_line,
                     );
                 }
                 new_state(
-                    (previous_line, current_line, next_line),
-                    |_, cur, next| cur & 0b011 | next & (0b100 << 31),
+                    [previous_line, current_line, next_line],
+                    [0, 0b11 << 30, 0b1],
                     word,
-                    0,
+                    31,
                     &mut new_line,
                 );
             }
