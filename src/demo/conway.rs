@@ -103,24 +103,6 @@ impl GameOfLife {
             current_y += 1;
         }
 
-        // let mut rows = universe_seed.lines().flat_map(|line| {
-        //     let bytes = line.as_bytes();
-
-        //     bytes
-        //         .chunks(32)
-        //         .map(|word| {
-        //             word.iter()
-        //                 .copied()
-        //                 .chain(core::iter::repeat(b'.').take(32 - word.len()))
-        //                 .fold(0, |word, byte| match byte {
-        //                     b'.' => word >> 1,
-        //                     b'*' => (word >> 1) | 0x80000000,
-        //                     _ => unimplemented!(),
-        //                 })
-        //         })
-        //         .chain(core::iter::repeat(0).take(BOARD_WIDTH_WORDS - div_ceil(bytes.len(), 32)))
-        // });
-
         let actual_size = core::mem::size_of::<Self>();
         let actual_size_words = div_ceil(actual_size, 4);
 
@@ -170,42 +152,43 @@ impl GameOfLife {
 
             fn new_state(
                 lines: [&[u32; BOARD_WIDTH_WORDS]; 3],
-                mask: [u32; 3],
+                mask: impl Fn() -> [u32; 3],
                 word: usize,
                 bit: usize,
                 new_line: &mut [u32; BOARD_WIDTH_WORDS],
             ) {
-                let apply_mask = |line: &[u32; BOARD_WIDTH_WORDS]| {
-                    [
-                        word.checked_sub(1).map(|i| line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
-                        line[word],
-                        line.get(word + 1).copied().unwrap_or(0),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, word)| word & mask[i])
-                };
-
                 let neighborhood = lines
                     .into_iter()
-                    .flat_map(apply_mask)
+                    .map(|line: &[u32; BOARD_WIDTH_WORDS]| {
+                        [
+                            word.checked_sub(1).map(|i| line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
+                            line[word],
+                            line.get(word + 1).copied().unwrap_or(0),
+                        ]
+                    })
+                    .flat_map(|adjacent| {
+                        adjacent
+                            .into_iter()
+                            .zip(mask())
+                            .map(|(word, mask)| word & mask)
+                    })
                     .map(u32::count_ones)
                     .sum();
 
                 let new_state = match neighborhood {
-                    3 => 1,
-                    4 => (lines[1][word] >> bit) & 0x1,
+                    3 => 1 << 31,
+                    4 => (lines[1][word] << (31 - bit)) & (1 << 31),
                     _ => 0,
                 };
 
-                new_line[word] = (new_line[word] >> 1) + (new_state << 31);
+                new_line[word] = (new_line[word] >> 1) | new_state;
             }
 
             // pp ... ppp ppn pnn nnn ... nn
             for word in 0..BOARD_WIDTH_WORDS {
                 new_state(
                     [previous_line, current_line, next_line],
-                    [0b1 << 31, 0b11, 0],
+                    || [0b1 << 31, 0b11, 0],
                     word,
                     0,
                     &mut new_line,
@@ -213,7 +196,7 @@ impl GameOfLife {
                 for i in 1..=30 {
                     new_state(
                         [previous_line, current_line, next_line],
-                        [0, 0b111 << (i - 1), 0],
+                        || [0, 0b111 << (i - 1), 0],
                         word,
                         i,
                         &mut new_line,
@@ -221,7 +204,7 @@ impl GameOfLife {
                 }
                 new_state(
                     [previous_line, current_line, next_line],
-                    [0, 0b11 << 30, 0b1],
+                    || [0, 0b11 << 30, 0b1],
                     word,
                     31,
                     &mut new_line,
