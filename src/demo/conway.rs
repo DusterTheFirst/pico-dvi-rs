@@ -159,7 +159,7 @@ impl GameOfLife {
             ) {
                 let neighborhood = lines
                     .into_iter()
-                    .map(|line: &[u32; BOARD_WIDTH_WORDS]| {
+                    .map(|line| {
                         [
                             word.checked_sub(1).map(|i| line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
                             line[word],
