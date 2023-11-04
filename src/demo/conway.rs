@@ -33,11 +33,14 @@ impl GameOfLife {
             bytes
                 .chunks(32)
                 .map(|word| {
-                    word.iter().fold(0, |word, byte| match byte {
-                        b'.' => word >> 1,
-                        b'*' => (word >> 1) | 0x80000000,
-                        _ => unimplemented!(),
-                    })
+                    word.iter()
+                        .copied()
+                        .chain(core::iter::repeat(b'.').take(32 - word.len()))
+                        .fold(0, |word, byte| match byte {
+                            b'.' => word >> 1,
+                            b'*' => (word >> 1) | 0x80000000,
+                            _ => unimplemented!(),
+                        })
                 })
                 .chain(core::iter::repeat(0).take(BOARD_WIDTH_WORDS - div_ceil(bytes.len(), 32)))
         });
@@ -62,7 +65,7 @@ impl GameOfLife {
 
         GameOfLife {
             age: 0,
-            universe: core::array::from_fn(|_| rows.next().unwrap_or(0xaaaaaaaa)),
+            universe: core::array::from_fn(|_| rows.next().unwrap_or(0)),
         }
     }
 
