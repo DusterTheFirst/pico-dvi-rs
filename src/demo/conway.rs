@@ -1,5 +1,7 @@
+use core::ops::Range;
+
 use alloc::format;
-use bitvec::slice::BitSlice;
+use bitvec::{prelude::BitArray, slice::BitSlice};
 use rp_pico::hal::gpio::PinId;
 
 use super::Counter;
@@ -23,7 +25,7 @@ const BOARD_WIDTH_WORDS: usize = div_ceil(BOARD_WIDTH, 32);
 
 pub struct GameOfLife {
     age: u32,
-    universe: [u32; BOARD_WIDTH_WORDS * BOARD_HEIGHT], // TODO: pack?
+    universe: BitArray<[u32; BOARD_WIDTH_WORDS * BOARD_HEIGHT], bitvec::order::Lsb0>, // TODO: pack?
 }
 
 impl GameOfLife {
@@ -122,185 +124,195 @@ impl GameOfLife {
             total_waste_words
         );
 
-        GameOfLife { age: 0, universe }
+        GameOfLife {
+            age: 0,
+            universe: BitArray::new(universe),
+        }
     }
 
     pub fn new_tick(&mut self) {
         self.age += 1;
 
         const EMPTY_LINE: [u32; BOARD_WIDTH_WORDS] = [0; BOARD_WIDTH_WORDS];
+        let empty_line = BitSlice::from_slice(&EMPTY_LINE);
 
-        let mut previous_new_line = EMPTY_LINE;
-        let mut new_line = EMPTY_LINE;
+        let mut previous_new_line = BitArray::new(EMPTY_LINE);
+        let mut new_line = BitArray::new(EMPTY_LINE);
 
-        for row in 0..BOARD_HEIGHT {
-            // FIXME: very jank indexing
-            let previous_line = if row != 0 {
-                self.universe[(row - 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
-                    .try_into()
-                    .unwrap()
-            } else {
-                &EMPTY_LINE
-            };
-            let current_line: &[u32; BOARD_WIDTH_WORDS] = &self.universe[row * BOARD_WIDTH_WORDS..]
-                [..BOARD_WIDTH_WORDS]
-                .try_into()
-                .unwrap();
-            let next_line = if row != BOARD_HEIGHT - 1 {
-                self.universe[(row + 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
-                    .try_into()
-                    .unwrap()
-            } else {
-                &EMPTY_LINE
-            };
+        let mut current_range = None;
+        let mut next_range = Some(0..BOARD_WIDTH);
 
-            {
-                type ConwaySlice = BitSlice<u32, bitvec::order::Lsb0>;
+        for _ in 0..BOARD_HEIGHT {
+            let previous_range = current_range;
+            current_range = next_range.clone();
+            next_range = next_range.map(|Range { start, end }| Range {
+                start: start + BOARD_WIDTH_WORDS * 32,
+                end: end + BOARD_WIDTH_WORDS * 32,
+            });
 
-                let previous_line = ConwaySlice::from_slice(previous_line);
-                let current_line = ConwaySlice::from_slice(current_line);
-                let next_line = ConwaySlice::from_slice(next_line);
+            let previous_line = previous_range
+                .clone()
+                .and_then(|range| self.universe.get(range))
+                .unwrap_or(empty_line);
+            let current_line = current_range
+                .clone()
+                .and_then(|range| self.universe.get(range))
+                .unwrap_or(empty_line);
+            let next_line = next_range
+                .clone()
+                .and_then(|range| self.universe.get(range))
+                .unwrap_or(empty_line);
 
-                let new_line = ConwaySlice::from_slice_mut(&mut new_line);
+            new_line.set(
+                0,
+                match previous_line[..2].count_ones()
+                    + current_line[..2].count_ones()
+                    + next_line[..2].count_ones()
+                {
+                    3 => true,
+                    4 => current_line[0],
+                    _ => false,
+                },
+            );
 
-                let start = core::iter::once(&previous_line[..2])
-                    .zip(core::iter::once(&current_line[..2]))
-                    .zip(core::iter::once(&next_line[..2]));
-                let middle = core::iter::zip(previous_line.windows(3), current_line.windows(3))
-                    .zip(next_line.windows(3));
-                let end = core::iter::once(&previous_line[previous_line.len()..])
-                    .zip(core::iter::once(&current_line[previous_line.len()..]))
-                    .zip(core::iter::once(&next_line[previous_line.len()..]));
-
-                start
-                    .chain(middle)
-                    .chain(end)
-                    .map(|((previous, current), next)| {
-                        previous.count_ones() + current.count_ones() + next.count_ones()
-                    })
+            for (cell, ((previous, current), next)) in
+                core::iter::zip(previous_line.windows(3), current_line.windows(3))
+                    .zip(next_line.windows(3))
                     .enumerate()
-                    .for_each(|(cell, neighbors)| {
-                        new_line.set(
-                            cell,
-                            match neighbors {
-                                3 => true,
-                                4 => current_line[cell],
-                                _ => false,
-                            },
-                        )
-                    });
+            {
+                let cell = cell + 1;
+                new_line.set(
+                    cell,
+                    match previous.count_ones() + current.count_ones() + next.count_ones() {
+                        3 => true,
+                        4 => current_line[cell],
+                        _ => false,
+                    },
+                );
             }
 
-            if let Some(i) = row.checked_sub(1) {
-                self.universe[i * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
-                    .copy_from_slice(&previous_new_line);
+            new_line.set(
+                BOARD_WIDTH - 1,
+                match previous_line[BOARD_WIDTH - 2..].count_ones()
+                    + current_line[BOARD_WIDTH - 2..].count_ones()
+                    + next_line[BOARD_WIDTH - 2..].count_ones()
+                {
+                    3 => true,
+                    4 => current_line[BOARD_WIDTH - 1],
+                    _ => false,
+                },
+            );
+
+            if let Some(range) = previous_range {
+                self.universe[range].copy_from_bitslice(&previous_new_line[..BOARD_WIDTH]);
             }
             previous_new_line = core::mem::take(&mut new_line);
         }
 
         // Apply the last new line
-        self.universe[(BOARD_HEIGHT - 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
-            .copy_from_slice(&previous_new_line);
-    }
-
-    pub fn tick(&mut self) {
-        self.age += 1;
-
-        let mut previous_new_line = [0; BOARD_WIDTH_WORDS];
-        let mut new_line = [0; BOARD_WIDTH_WORDS];
-
-        for row in 0..BOARD_HEIGHT {
-            // FIXME: very jank indexing
-            let previous_line = if row != 0 {
-                self.universe[(row - 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
-                    .try_into()
-                    .unwrap()
-            } else {
-                &[0; BOARD_WIDTH_WORDS]
-            };
-            let current_line = &self.universe[row * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
-                .try_into()
-                .unwrap();
-            let next_line = if row != BOARD_HEIGHT - 1 {
-                self.universe[(row + 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
-                    .try_into()
-                    .unwrap()
-            } else {
-                &[0; BOARD_WIDTH_WORDS]
-            };
-
-            fn new_state(
-                lines: [&[u32; BOARD_WIDTH_WORDS]; 3],
-                mask: impl Fn() -> [u32; 3],
-                word: usize,
-                bit: usize,
-                new_line: &mut [u32; BOARD_WIDTH_WORDS],
-            ) {
-                let neighborhood = lines
-                    .into_iter()
-                    .map(|line| {
-                        [
-                            word.checked_sub(1).map(|i| line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
-                            line[word],
-                            line.get(word + 1).copied().unwrap_or(0),
-                        ]
-                    })
-                    .flat_map(|adjacent| {
-                        adjacent
-                            .into_iter()
-                            .zip(mask())
-                            .map(|(word, mask)| word & mask)
-                    })
-                    .map(u32::count_ones)
-                    .sum();
-
-                let new_state = match neighborhood {
-                    3 => 1 << 31,
-                    4 => (lines[1][word] << (31 - bit)) & (1 << 31),
-                    _ => 0,
-                };
-
-                new_line[word] = (new_line[word] >> 1) | new_state;
-            }
-
-            // pp ... ppp ppn pnn nnn ... nn
-            for word in 0..BOARD_WIDTH_WORDS {
-                new_state(
-                    [previous_line, current_line, next_line],
-                    || [0b1 << 31, 0b11, 0],
-                    word,
-                    0,
-                    &mut new_line,
-                );
-                for i in 1..=30 {
-                    new_state(
-                        [previous_line, current_line, next_line],
-                        || [0, 0b111 << (i - 1), 0],
-                        word,
-                        i,
-                        &mut new_line,
-                    );
-                }
-                new_state(
-                    [previous_line, current_line, next_line],
-                    || [0, 0b11 << 30, 0b1],
-                    word,
-                    31,
-                    &mut new_line,
-                );
-            }
-
-            if let Some(i) = row.checked_sub(1) {
-                self.universe[i * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
-                    .copy_from_slice(&previous_new_line);
-            }
-            previous_new_line = core::mem::take(&mut new_line);
+        if let Some(range) = current_range {
+            self.universe[range].copy_from_bitslice(&previous_new_line[..BOARD_WIDTH]);
         }
-
-        // Apply the last new line
-        self.universe[(BOARD_HEIGHT - 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
-            .copy_from_slice(&previous_new_line);
     }
+
+    // pub fn tick(&mut self) {
+    //     self.age += 1;
+
+    //     let mut previous_new_line = [0; BOARD_WIDTH_WORDS];
+    //     let mut new_line = [0; BOARD_WIDTH_WORDS];
+
+    //     for row in 0..BOARD_HEIGHT {
+    //         // FIXME: very jank indexing
+    //         let previous_line = if row != 0 {
+    //             self.universe[(row - 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+    //                 .try_into()
+    //                 .unwrap()
+    //         } else {
+    //             &[0; BOARD_WIDTH_WORDS]
+    //         };
+    //         let current_line = &self.universe[row * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+    //             .try_into()
+    //             .unwrap();
+    //         let next_line = if row != BOARD_HEIGHT - 1 {
+    //             self.universe[(row + 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+    //                 .try_into()
+    //                 .unwrap()
+    //         } else {
+    //             &[0; BOARD_WIDTH_WORDS]
+    //         };
+
+    //         fn new_state(
+    //             lines: [&[u32; BOARD_WIDTH_WORDS]; 3],
+    //             mask: impl Fn() -> [u32; 3],
+    //             word: usize,
+    //             bit: usize,
+    //             new_line: &mut [u32; BOARD_WIDTH_WORDS],
+    //         ) {
+    //             let neighborhood = lines
+    //                 .into_iter()
+    //                 .map(|line| {
+    //                     [
+    //                         word.checked_sub(1).map(|i| line[i]).unwrap_or(0), // Previous word (or 0 if none previous)
+    //                         line[word],
+    //                         line.get(word + 1).copied().unwrap_or(0),
+    //                     ]
+    //                 })
+    //                 .flat_map(|adjacent| {
+    //                     adjacent
+    //                         .into_iter()
+    //                         .zip(mask())
+    //                         .map(|(word, mask)| word & mask)
+    //                 })
+    //                 .map(u32::count_ones)
+    //                 .sum();
+
+    //             let new_state = match neighborhood {
+    //                 3 => 1 << 31,
+    //                 4 => (lines[1][word] << (31 - bit)) & (1 << 31),
+    //                 _ => 0,
+    //             };
+
+    //             new_line[word] = (new_line[word] >> 1) | new_state;
+    //         }
+
+    //         // pp ... ppp ppn pnn nnn ... nn
+    //         for word in 0..BOARD_WIDTH_WORDS {
+    //             new_state(
+    //                 [previous_line, current_line, next_line],
+    //                 || [0b1 << 31, 0b11, 0],
+    //                 word,
+    //                 0,
+    //                 &mut new_line,
+    //             );
+    //             for i in 1..=30 {
+    //                 new_state(
+    //                     [previous_line, current_line, next_line],
+    //                     || [0, 0b111 << (i - 1), 0],
+    //                     word,
+    //                     i,
+    //                     &mut new_line,
+    //                 );
+    //             }
+    //             new_state(
+    //                 [previous_line, current_line, next_line],
+    //                 || [0, 0b11 << 30, 0b1],
+    //                 word,
+    //                 31,
+    //                 &mut new_line,
+    //             );
+    //         }
+
+    //         if let Some(i) = row.checked_sub(1) {
+    //             self.universe[i * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+    //                 .copy_from_slice(&previous_new_line);
+    //         }
+    //         previous_new_line = core::mem::take(&mut new_line);
+    //     }
+
+    //     // Apply the last new line
+    //     self.universe[(BOARD_HEIGHT - 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+    //         .copy_from_slice(&previous_new_line);
+    // }
 }
 
 const TEXT: u32 = 0xffffff;
@@ -337,7 +349,7 @@ impl GameOfLife {
 
         rb.begin_stripe(BOARD_HEIGHT as u32);
         rb.blit_1bpp(
-            &self.universe,
+            &self.universe.as_raw_slice(),
             BOARD_WIDTH_WORDS,
             BOARD_WIDTH_WORDS as u32 * 4,
         );
