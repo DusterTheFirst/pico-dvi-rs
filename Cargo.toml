@@ -26,6 +26,7 @@ fugit    = { version = "0.3.6", features = ["defmt"] }
 pio      = "0.2.1"
 pio-proc = "0.2.1"
 rp-pico  = { version = "0.8.0", features = ["rom-v2-intrinsics"] }
+
 bitvec = { version = "1.0.1", default-features = false }
 
 # TODO: use for bitfield

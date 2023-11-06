@@ -175,17 +175,16 @@ impl GameOfLife {
                 },
             );
 
-            for (cell, ((previous, current), next)) in
-                core::iter::zip(previous_line.windows(3), current_line.windows(3))
-                    .zip(next_line.windows(3))
-                    .enumerate()
-            {
-                let cell = cell + 1;
+            for bit in 1..BOARD_WIDTH - 1 {
+                let range = (bit - 1)..=(bit + 1);
                 new_line.set(
-                    cell,
-                    match previous.count_ones() + current.count_ones() + next.count_ones() {
+                    bit,
+                    match previous_line[range.clone()].count_ones()
+                        + current_line[range.clone()].count_ones()
+                        + next_line[range].count_ones()
+                    {
                         3 => true,
-                        4 => current_line[cell],
+                        4 => current_line[bit],
                         _ => false,
                     },
                 );
