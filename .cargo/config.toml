@@ -19,6 +19,7 @@ rustflags = [
   # "-Z", "trap-unreachable=no",
   "-C", "inline-threshold=5",
   "-C", "no-vectorize-loops",
+  "-C", "target-cpu=cortex-m0plus"
 ]
 
 [build]

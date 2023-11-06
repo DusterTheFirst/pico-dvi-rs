@@ -1,4 +1,5 @@
 use alloc::format;
+use bitvec::slice::BitSlice;
 use rp_pico::hal::gpio::PinId;
 
 use super::Counter;
@@ -122,6 +123,84 @@ impl GameOfLife {
         );
 
         GameOfLife { age: 0, universe }
+    }
+
+    pub fn new_tick(&mut self) {
+        self.age += 1;
+
+        const EMPTY_LINE: [u32; BOARD_WIDTH_WORDS] = [0; BOARD_WIDTH_WORDS];
+
+        let mut previous_new_line = EMPTY_LINE;
+        let mut new_line = EMPTY_LINE;
+
+        for row in 0..BOARD_HEIGHT {
+            // FIXME: very jank indexing
+            let previous_line = if row != 0 {
+                self.universe[(row - 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+                    .try_into()
+                    .unwrap()
+            } else {
+                &EMPTY_LINE
+            };
+            let current_line: &[u32; BOARD_WIDTH_WORDS] = &self.universe[row * BOARD_WIDTH_WORDS..]
+                [..BOARD_WIDTH_WORDS]
+                .try_into()
+                .unwrap();
+            let next_line = if row != BOARD_HEIGHT - 1 {
+                self.universe[(row + 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+                    .try_into()
+                    .unwrap()
+            } else {
+                &EMPTY_LINE
+            };
+
+            {
+                type ConwaySlice = BitSlice<u32, bitvec::order::Lsb0>;
+
+                let previous_line = ConwaySlice::from_slice(previous_line);
+                let current_line = ConwaySlice::from_slice(current_line);
+                let next_line = ConwaySlice::from_slice(next_line);
+
+                let new_line = ConwaySlice::from_slice_mut(&mut new_line);
+
+                let start = core::iter::once(&previous_line[..2])
+                    .zip(core::iter::once(&current_line[..2]))
+                    .zip(core::iter::once(&next_line[..2]));
+                let middle = core::iter::zip(previous_line.windows(3), current_line.windows(3))
+                    .zip(next_line.windows(3));
+                let end = core::iter::once(&previous_line[previous_line.len()..])
+                    .zip(core::iter::once(&current_line[previous_line.len()..]))
+                    .zip(core::iter::once(&next_line[previous_line.len()..]));
+
+                start
+                    .chain(middle)
+                    .chain(end)
+                    .map(|((previous, current), next)| {
+                        previous.count_ones() + current.count_ones() + next.count_ones()
+                    })
+                    .enumerate()
+                    .for_each(|(cell, neighbors)| {
+                        new_line.set(
+                            cell,
+                            match neighbors {
+                                3 => true,
+                                4 => current_line[cell],
+                                _ => false,
+                            },
+                        )
+                    });
+            }
+
+            if let Some(i) = row.checked_sub(1) {
+                self.universe[i * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+                    .copy_from_slice(&previous_new_line);
+            }
+            previous_new_line = core::mem::take(&mut new_line);
+        }
+
+        // Apply the last new line
+        self.universe[(BOARD_HEIGHT - 1) * BOARD_WIDTH_WORDS..][..BOARD_WIDTH_WORDS]
+            .copy_from_slice(&previous_new_line);
     }
 
     pub fn tick(&mut self) {
