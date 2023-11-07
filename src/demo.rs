@@ -79,50 +79,52 @@ fn colorbars<P: PinId>(counter: &mut Counter<P>) {
 fn tiles<P: PinId>(counter: &mut Counter<P>) {
     counter.count();
     let (mut rb, mut sb) = start_display_list();
-    let anim_frame = counter.count % 240;
-    let (x_off, y_off) = if anim_frame < 60 {
-        (anim_frame, 0)
-    } else if anim_frame < 120 {
-        (60, anim_frame - 60)
-    } else if anim_frame < 180 {
-        (180 - anim_frame, 60)
-    } else {
-        (0, 240 - anim_frame)
-    };
-    let height = 480 / VERTICAL_REPEAT as u32;
-    let mut y = 0;
-    let tiled_height = height - FONT_HEIGHT;
-    while y < tiled_height {
-        let ystart = if y == 0 { y_off % 16 } else { 0 };
-        let this_height = (tiled_height - y).min(16 - ystart);
-        rb.begin_stripe(this_height);
-        let x = x_off % 16;
-        let tile_top = &TILE_DATA[ystart as usize * 2..];
-        rb.tile64(tile_top, x, 16);
-        let mut x = 16 - x;
-        while x < 640 {
-            let width = (640 - x).min(16);
-            rb.tile64(tile_top, 0, width);
-            x += width;
+    crate::perf::instrument(|| {
+        let anim_frame = counter.count % 240;
+        let (x_off, y_off) = if anim_frame < 60 {
+            (anim_frame, 0)
+        } else if anim_frame < 120 {
+            (60, anim_frame - 60)
+        } else if anim_frame < 180 {
+            (180 - anim_frame, 60)
+        } else {
+            (0, 240 - anim_frame)
+        };
+        let height = 480 / VERTICAL_REPEAT as u32;
+        let mut y = 0;
+        let tiled_height = height - FONT_HEIGHT;
+        while y < tiled_height {
+            let ystart = if y == 0 { y_off % 16 } else { 0 };
+            let this_height = (tiled_height - y).min(16 - ystart);
+            rb.begin_stripe(this_height);
+            let x = x_off % 16;
+            let tile_top = &TILE_DATA[ystart as usize * 2..];
+            rb.tile64(tile_top, x, 16);
+            let mut x = 16 - x;
+            while x < 640 {
+                let width = (640 - x).min(16);
+                rb.tile64(tile_top, 0, width);
+                x += width;
+            }
+            rb.end_stripe();
+            y += this_height;
         }
+        sb.begin_stripe(tiled_height);
+        unsafe {
+            sb.pal_4bpp(640, &GLOBAL_PALETTE);
+        }
+        sb.end_stripe();
+        rb.begin_stripe(FONT_HEIGHT);
+        let text = format!("Hello pico-dvi-rs, frame {}", counter.count);
+        let width = rb.text(&text);
+        let width = width + width % 2;
         rb.end_stripe();
-        y += this_height;
-    }
-    sb.begin_stripe(tiled_height);
-    unsafe {
-        sb.pal_4bpp(640, &GLOBAL_PALETTE);
-    }
-    sb.end_stripe();
-    rb.begin_stripe(FONT_HEIGHT);
-    let text = format!("Hello pico-dvi-rs, frame {}", counter.count);
-    let width = rb.text(&text);
-    let width = width + width % 2;
-    rb.end_stripe();
-    sb.begin_stripe(FONT_HEIGHT);
-    sb.pal_1bpp(width, &BW_PALETTE);
-    sb.solid(640 - width, rgb(0, 0, 0));
-    sb.end_stripe();
-    end_display_list(rb, sb);
+        sb.begin_stripe(FONT_HEIGHT);
+        sb.pal_1bpp(width, &BW_PALETTE);
+        sb.solid(640 - width, rgb(0, 0, 0));
+        sb.end_stripe();
+        end_display_list(rb, sb);
+    })
 }
 
 pub fn demo<P: PinId>(led_pin: Pin<P, FunctionSioOutput, PullDown>) -> ! {

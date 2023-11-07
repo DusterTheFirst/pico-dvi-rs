@@ -43,6 +43,7 @@ mod clock;
 mod demo;
 mod dvi;
 mod link;
+mod perf;
 mod render;
 mod scanlist;
 
@@ -101,7 +102,9 @@ fn entry() -> ! {
     }
 
     let mut peripherals = pac::Peripherals::take().unwrap();
-    //let core_peripherals = pac::CorePeripherals::take().unwrap();
+    let core_peripherals = pac::CorePeripherals::take().unwrap();
+
+    perf::setup(core_peripherals.SYST);
 
     sysinfo(&peripherals.SYSINFO);
 
