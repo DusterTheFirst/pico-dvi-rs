@@ -61,16 +61,12 @@ impl GameOfLife {
 
             let (unaligned_prefix, line) =
                 line.split_at(usize::min(32 - current_x_bit, line.len()));
-            let (aligned, unaligned_suffix) = line.split_at(line.len() - line.len() % 32);
-
-            // defmt::dbg!(unaligned_prefix);
-            // defmt::dbg!(aligned);
-            // defmt::dbg!(unaligned_suffix);
+            let (aligned, unaligned_suffix) = line.split_at((line.len() / 32) * 32);
 
             fn chars_to_byte(chars: &[u8]) -> u32 {
-                chars.iter().fold(0, |word, byte| match byte {
-                    b'.' => word >> 1,
-                    b'*' => (word >> 1) | 0x80000000u32,
+                chars.iter().rev().fold(0, |word, byte| match byte {
+                    b'.' => word << 1,
+                    b'*' => (word << 1) | 0b1u32,
                     _ => unimplemented!(),
                 })
             }
@@ -78,7 +74,7 @@ impl GameOfLife {
             let universe = &mut universe[current_x_word + current_y * BOARD_WIDTH_WORDS..];
 
             let starting_word = if !unaligned_prefix.is_empty() {
-                let unaligned_prefix = chars_to_byte(unaligned_prefix);
+                let unaligned_prefix = chars_to_byte(unaligned_prefix) << current_x_bit;
                 universe[0] |= unaligned_prefix; // FIXME: zero these bits out first
 
                 1
@@ -87,8 +83,7 @@ impl GameOfLife {
             };
 
             let ending_word = if !unaligned_suffix.is_empty() {
-                let unaligned_suffix =
-                    chars_to_byte(unaligned_suffix) >> (32 - unaligned_suffix.len());
+                let unaligned_suffix = chars_to_byte(unaligned_suffix);
                 universe[line_words - 1] |= unaligned_suffix; // FIXME: zero these bits out first
 
                 line_words - 1
@@ -98,9 +93,6 @@ impl GameOfLife {
 
             let mut aligned = aligned.chunks_exact(32).map(chars_to_byte);
             universe[starting_word..ending_word].fill_with(|| aligned.next().unwrap());
-
-            // defmt::dbg!(starting_word, ending_word, words);
-            // defmt::debug!("{=[?]:032b}", &universe[..line_words]);
 
             current_y += 1;
         }
