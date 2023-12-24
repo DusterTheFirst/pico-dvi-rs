@@ -132,14 +132,14 @@ pub fn demo<P: PinId>(led_pin: Pin<P, FunctionSioOutput, PullDown>) -> ! {
     let mut game_of_life = GameOfLife::new(include_str!("demo/universe.txt"));
 
     loop {
-        // for _ in 0..120 {
-        //     counter.count();
-        //     colorbars(&counter);
-        // }
-        // for _ in 0..240 {
-        //     counter.count();
-        //     tiles(&counter);
-        // }
+        for _ in 0..120 {
+            counter.count();
+            colorbars(&counter);
+        }
+        for _ in 0..240 {
+            counter.count();
+            tiles(&counter);
+        }
         for i in 0..240 {
             counter.count();
 
