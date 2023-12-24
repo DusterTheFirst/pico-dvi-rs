@@ -9,7 +9,7 @@ use defmt_rtt as _;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
 use cortex_m::peripheral::NVIC;
-use defmt::{dbg, info};
+use defmt::info;
 use dvi::dma::DmaChannelList;
 use embedded_alloc::Heap;
 use rp_pico::{
@@ -87,13 +87,21 @@ fn macro_entry() -> ! {
     entry();
 }
 
-const PALETTE: &[u32] = &[
-    0x0, 0xffffff, 0x9d9d9d, 0xe06f8b, 0xbe2633, 0x493c2b, 0xa46422, 0xeb8931, 0xf7e26b, 0xa3ce27,
-    0x44891a, 0x2f484e, 0x1b2632, 0x5784, 0x31a2f2, 0xb2dcef,
+const PALETTE: &[u32; 16] = &[
+    0x000000, 0xffffff, 0x9d9d9d, 0xe06f8b, 0xbe2633, 0x493c2b, 0xa46422, 0xeb8931, 0xf7e26b,
+    0xa3ce27, 0x44891a, 0x2f484e, 0x1b2632, 0x5784, 0x31a2f2, 0xb2dcef,
 ];
 
 fn entry() -> ! {
     info!("Program start");
+
+    // Test allocations in different memory regions
+    rom();
+    ram();
+    ram_x();
+    ram_y();
+    defmt::info!("If we have not panicked by now, memory regions probably work well");
+
     {
         const HEAP_SIZE: usize = 128 * 1024;
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
@@ -190,11 +198,6 @@ fn entry() -> ! {
     }
     init_display_swapcell(640);
 
-    rom();
-    ram();
-    ram_x();
-    ram_y();
-
     unsafe {
         init_4bpp_palette(&mut GLOBAL_PALETTE, PALETTE);
     }
@@ -226,25 +229,45 @@ chip_id:
 
 // Functions and statics are placed in rom by default
 fn rom() {
-    dbg!(rom as fn() as *const ());
+    let ptr = rom as fn() as *const ();
+    defmt::assert!(
+        (0x10000100..0x20000000).contains(&(ptr as u32)),
+        "rom fn is placed at {} which is not in FLASH",
+        ptr
+    );
 }
 
 // This function will be placed in ram
 #[link_section = link!(ram, ram)]
 fn ram() {
-    dbg!(ram as fn() as *const ());
+    let ptr = ram as fn() as *const ();
+    defmt::assert!(
+        (0x20000000..0x20040000).contains(&(ptr as u32)),
+        "ram fn is placed at {} which is not in RAM",
+        ptr
+    );
 }
 
 // This function will be placed in ram
 #[link_section = link!(scratch x, ram_x)]
 fn ram_x() {
-    dbg!(ram_x as fn() as *const ());
+    let ptr = ram_x as fn() as *const ();
+    defmt::assert!(
+        (0x20040000..0x20041000).contains(&(ptr as u32)),
+        "ram_x fn is placed at {} which is not in SCRATCH_X",
+        ptr
+    );
 }
 
 // This function will be placed in ram
 #[link_section = link!(scratch y, ram_y)]
 fn ram_y() {
-    dbg!(ram_y as fn() as *const ());
+    let ptr = ram_y as fn() as *const ();
+    defmt::assert!(
+        (0x20041000..0x20042000).contains(&(ptr as u32)),
+        "ram_y fn is placed at {} which is not in SCRATCH_Y",
+        ptr
+    );
 }
 
 /// Called by the system only when core 1 is overloaded and can't handle all the rendering work, and requests core 0 to render one scan line worth of content.

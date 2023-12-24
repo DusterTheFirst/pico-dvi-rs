@@ -83,7 +83,7 @@ impl ScanlistBuilder {
 
     /// Safety note: we take a reference to the palette, but the
     /// lifetime must extend until it is used.
-    pub fn pal_1bpp(&mut self, count: u32, palette: &[PaletteEntry]) {
+    pub fn pal_1bpp(&mut self, count: u32, palette: &[PaletteEntry; 4]) {
         self.v.extend_from_slice(&[
             tmds_scan_1bpp_pal as u32,
             count / 2,
@@ -94,7 +94,7 @@ impl ScanlistBuilder {
 
     /// Safety note: we take a reference to the palette, but the
     /// lifetime must extend until it is used.
-    pub fn pal_4bpp(&mut self, count: u32, palette: &[PaletteEntry]) {
+    pub fn pal_4bpp(&mut self, count: u32, palette: &[PaletteEntry; 256]) {
         self.v.extend_from_slice(&[
             tmds_scan_4bpp_pal as u32,
             count / 2,

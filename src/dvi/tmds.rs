@@ -1,6 +1,7 @@
-// TMDS encoding for DVI
+/// [TMDS] encoding for DVI
+/// [TMDS]: https://en.wikipedia.org/wiki/Transition-minimized_differential_signaling
 
-/// A single TMDS symbol.
+/// A single [TMDS] symbol.
 ///
 /// The [TMDS] encoding for DVI produces one 10-bit symbol for each 8
 /// bit word.
@@ -89,9 +90,21 @@ impl TmdsPair {
     /// This is not guaranteed to be DC balanced unless the bytes are
     /// carefully chosen.
     pub const fn encode_pair(b0: u8, b1: u8) -> Self {
+        let (pair, discrepancy) = Self::encode_pair_discrepancy(b0, b1);
+
+        // TODO: REMOVE?
+        // Ensure the pair is balanced in testing
+        debug_assert!(discrepancy == 0);
+
+        pair
+    }
+
+    /// Encode a pair of bytes, returning the pair and their discrepancy.
+    pub const fn encode_pair_discrepancy(b0: u8, b1: u8) -> (Self, i32) {
         let (discrepancy, symbol_0) = TmdsSymbol::encode(0, b0);
-        let (_, symbol_1) = TmdsSymbol::encode(discrepancy, b1);
-        Self::new(symbol_0, symbol_1)
+        let (discrepancy, symbol_1) = TmdsSymbol::encode(discrepancy, b1);
+
+        (Self::new(symbol_0, symbol_1), discrepancy)
     }
 
     /// Encode two copies of a byte, approximating to achieve DC balance.

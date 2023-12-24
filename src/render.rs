@@ -5,7 +5,9 @@ mod renderlist;
 mod swapcell;
 
 pub use font::FONT_HEIGHT;
-pub use palette::{init_4bpp_palette, PaletteEntry, BW_PALETTE, GLOBAL_PALETTE};
+pub use palette::{
+    init_4bpp_palette, quantized_1bpp_palette, PaletteEntry, BW_PALETTE, GLOBAL_PALETTE,
+};
 
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
@@ -94,11 +96,24 @@ extern "C" {
     fn render_engine(render_list: *const u32, output: *mut u32, y: u32);
 }
 
-pub fn rgb(r: u8, g: u8, b: u8) -> [TmdsPair; 3] {
+pub const fn rgb(r: u8, g: u8, b: u8) -> [TmdsPair; 3] {
     [
         TmdsPair::encode_balanced_approx(b),
         TmdsPair::encode_balanced_approx(g),
         TmdsPair::encode_balanced_approx(r),
+    ]
+}
+
+/// Creates a TMDS pair per color channel of a 24 bit RGB color.
+///
+/// The input color is of the form 0xRRGGBB.
+///
+/// If each channel is already separated out, use [`rgb`] instead.
+pub const fn xrgb(color: u32) -> [TmdsPair; 3] {
+    [
+        TmdsPair::encode_balanced_approx(color as u8),
+        TmdsPair::encode_balanced_approx((color >> 8) as u8),
+        TmdsPair::encode_balanced_approx((color >> 16) as u8),
     ]
 }
 
