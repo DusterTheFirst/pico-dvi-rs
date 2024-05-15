@@ -1,5 +1,5 @@
 use fugit::{KilohertzU32, MegahertzU32, RateExtU32};
-use rp_pico::{
+use rp2040_bsp::{
     hal::{
         clocks::{ClockSource, ClocksManager},
         pll::{

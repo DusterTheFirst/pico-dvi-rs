@@ -11,7 +11,7 @@ pub use palette::{
 
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
-use rp_pico::{
+use rp2040_bsp::{
     hal::{sio::SioFifo, Sio},
     pac,
 };

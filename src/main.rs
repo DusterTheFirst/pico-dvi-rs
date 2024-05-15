@@ -12,7 +12,7 @@ use cortex_m::peripheral::NVIC;
 use defmt::info;
 use dvi::dma::DmaChannelList;
 use embedded_alloc::Heap;
-use rp_pico::{
+use rp2040_bsp::{
     hal::{
         dma::{Channel, DMAExt, CH0, CH1, CH2, CH3, CH4, CH5},
         gpio::PinState,
@@ -82,7 +82,7 @@ static mut CORE1_STACK: Stack<256> = Stack::new();
 static mut FIFO: MaybeUninit<SioFifo> = MaybeUninit::uninit();
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
-#[rp_pico::entry]
+#[rp2040_bsp::entry]
 fn macro_entry() -> ! {
     entry();
 }

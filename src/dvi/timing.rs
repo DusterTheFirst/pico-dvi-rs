@@ -2,7 +2,7 @@
 //! <https://github.com/Wren6991/PicoDVI/blob/51237271437e9d1eb62c97e40171fbf6ffe01ac6/software/libdvi/dvi_timing.c>
 
 use fugit::KilohertzU32;
-use rp_pico::hal::dma::SingleChannel;
+use rp2040_bsp::hal::dma::SingleChannel;
 
 use super::{
     dma::{DmaChannelList, DmaChannels, DmaControlBlock, DviLaneDmaCfg},
