@@ -9,42 +9,39 @@ use defmt_rtt as _;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
 use cortex_m::peripheral::NVIC;
+use cortex_m_rt::interrupt;
 use defmt::info;
-use dvi::dma::DmaChannelList;
 use embedded_alloc::Heap;
-use rp_pico::{
-    hal::{
-        dma::{Channel, DMAExt, CH0, CH1, CH2, CH3, CH4, CH5},
-        gpio::PinState,
-        multicore::{Multicore, Stack},
-        pwm,
-        sio::{Sio, SioFifo},
-        watchdog::Watchdog,
-    },
-    pac::{self, interrupt},
-    Pins,
+use embedded_hal::{delay::DelayNs, digital::OutputPin};
+use hal::{
+    dma::{Channel, DMAExt, CH0, CH1, CH2, CH3, CH4, CH5},
+    gpio::PinState,
+    multicore::{Multicore, Stack},
+    pwm,
+    sio::{Sio, SioFifo},
+    watchdog::Watchdog,
 };
+use rp235x_hal as hal;
 
-use pac::Interrupt;
+use hal::pac::Interrupt;
 
 use crate::{
     clock::init_clocks,
-    dvi::{
-        core1_main,
-        dma::DmaChannels,
-        serializer::{DviClockPins, DviDataPins, DviSerializer},
-        timing::VGA_TIMING,
-        DviInst,
-    },
-    render::{init_4bpp_palette, init_display_swapcell, render_line, GLOBAL_PALETTE},
+    dvi::{timing::VGA_TIMING, DviInst},
 };
 
 mod clock;
-mod demo;
+//mod demo;
 mod dvi;
 mod link;
-mod render;
-mod scanlist;
+//mod render;
+//mod scanlist;
+
+/// The number of HSTX bits per system clock.
+///
+/// Ordinarily this is 2 so the system doesn't need to be overclocked, but
+/// can be 1 to provide more CPU horsepower per pixel.
+const HSTX_MULTIPLE: u32 = 2;
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
@@ -54,17 +51,12 @@ global_asm! {
     options(raw)
 }
 
-struct DviChannels;
-impl DmaChannelList for DviChannels {
-    type Ch0 = Channel<CH0>;
-    type Ch1 = Channel<CH1>;
-    type Ch2 = Channel<CH2>;
-    type Ch3 = Channel<CH3>;
-    type Ch4 = Channel<CH4>;
-    type Ch5 = Channel<CH5>;
-}
+/// Tell the Boot ROM about our application
+#[unsafe(link_section = ".start_block")]
+#[used]
+pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
-struct DviInstWrapper(UnsafeCell<MaybeUninit<DviInst<DviChannels>>>);
+struct DviInstWrapper(UnsafeCell<MaybeUninit<DviInst>>);
 
 // Safety: access to the instance is indeed shared across threads,
 // as it is initialized in the main thread and the interrupt should
@@ -82,7 +74,7 @@ static mut CORE1_STACK: Stack<256> = Stack::new();
 static mut FIFO: MaybeUninit<SioFifo> = MaybeUninit::uninit();
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
-#[rp_pico::entry]
+#[hal::entry]
 fn macro_entry() -> ! {
     entry();
 }
@@ -108,7 +100,7 @@ fn entry() -> ! {
         unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
     }
 
-    let mut peripherals = pac::Peripherals::take().unwrap();
+    let mut peripherals = hal::pac::Peripherals::take().unwrap();
     //let core_peripherals = pac::CorePeripherals::take().unwrap();
 
     sysinfo(&peripherals.SYSINFO);
@@ -119,7 +111,7 @@ fn entry() -> ! {
     let timing = VGA_TIMING;
 
     // External high-speed crystal on the pico board is 12Mhz
-    let _clocks = init_clocks(
+    let clocks = init_clocks(
         peripherals.XOSC,
         peripherals.ROSC,
         peripherals.CLOCKS,
@@ -127,54 +119,24 @@ fn entry() -> ! {
         peripherals.PLL_USB,
         &mut peripherals.RESETS,
         &mut watchdog,
-        timing.bit_clk,
+        timing.bit_clk / HSTX_MULTIPLE,
+        2 / HSTX_MULTIPLE,
     );
 
-    let pins = Pins::new(
+    let pins = hal::gpio::Pins::new(
         peripherals.IO_BANK0,
         peripherals.PADS_BANK0,
         single_cycle_io.gpio_bank0,
         &mut peripherals.RESETS,
     );
 
-    let led_pin = pins.led.into_push_pull_output_in_state(PinState::Low);
+    // LED is pin 7 on Feather 2350 board. We don't have board crates yet for Pico 2
+    let mut led_pin = pins.gpio7.into_push_pull_output_in_state(PinState::Low);
 
     let pwm_slices = pwm::Slices::new(peripherals.PWM, &mut peripherals.RESETS);
     let dma = peripherals.DMA.split(&mut peripherals.RESETS);
 
-    let (data_pins, clock_pins) = {
-        (
-            DviDataPins {
-                // 0
-                blue_pos: pins.gpio12.into_function(),
-                blue_neg: pins.gpio13.into_function(),
-                // 1
-                green_pos: pins.gpio10.into_function(),
-                green_neg: pins.gpio11.into_function(),
-                // 2
-                red_pos: pins.gpio16.into_function(),
-                red_neg: pins.gpio17.into_function(),
-            },
-            DviClockPins {
-                clock_pos: pins.gpio14.into_function(),
-                clock_neg: pins.gpio15.into_function(),
-                pwm_slice: pwm_slices.pwm7,
-            },
-        )
-    };
-
-    let serializer = DviSerializer::new(
-        peripherals.PIO0,
-        &mut peripherals.RESETS,
-        data_pins,
-        clock_pins,
-    );
-
-    let dma_channels = DmaChannels::new(
-        (dma.ch0, dma.ch1, dma.ch2, dma.ch3, dma.ch4, dma.ch5),
-        serializer.tx(),
-    );
-
+    /*
     {
         // Safety: the DMA_IRQ_0 handler is not enabled yet. We have exclusive access to this static.
         let inst = unsafe { (*DVI_INST.0.get()).write(DviInst::new(timing, dma_channels)) };
@@ -196,22 +158,43 @@ fn entry() -> ! {
         FIFO = MaybeUninit::new(fifo);
         NVIC::unmask(Interrupt::SIO_IRQ_PROC0);
     }
-    init_display_swapcell(640);
+    */
+
+    let mut timer = hal::Timer::new_timer0(peripherals.TIMER0, &mut peripherals.RESETS, &clocks);
 
     unsafe {
-        init_4bpp_palette(&mut GLOBAL_PALETTE, PALETTE);
+        (*DVI_INST.0.get()).write(DviInst::new(timing));
+        // Maybe do more safety theater here. The problem is that pins can't
+        // set the HSTX function.
+        let periphs = hal::pac::Peripherals::steal();
+        periphs.RESETS.reset().modify(|_, w| w.hstx().clear_bit());
+        while periphs.RESETS.reset_done().read().hstx().bit_is_clear() {}
+        dvi::setup_hstx(&periphs.HSTX_CTRL);
+        dvi::setup_dma(&periphs.DMA, &periphs.HSTX_FIFO);
+        periphs
+            .BUSCTRL
+            .bus_priority()
+            .write(|w| w.dma_r().set_bit().dma_w().set_bit());
+        dvi::setup_pins(&periphs.PADS_BANK0, &periphs.IO_BANK0);
+        cortex_m::peripheral::NVIC::unmask(Interrupt::DMA_IRQ_0);
+        dvi::start_dma(&periphs.DMA);
     }
 
-    demo::demo(led_pin);
+    loop {
+        led_pin.set_high().unwrap();
+        timer.delay_ms(500);
+        led_pin.set_low().unwrap();
+        timer.delay_ms(500);
+    }
 }
 
-fn sysinfo(sysinfo: &pac::SYSINFO) {
-    let is_fpga = sysinfo.platform.read().fpga().bit();
-    let is_asic = sysinfo.platform.read().asic().bit();
-    let git_hash = sysinfo.gitref_rp2040.read().bits();
-    let manufacturer = sysinfo.chip_id.read().manufacturer().bits();
-    let part = sysinfo.chip_id.read().part().bits();
-    let revision = sysinfo.chip_id.read().revision().bits();
+fn sysinfo(sysinfo: &hal::pac::SYSINFO) {
+    let is_fpga = sysinfo.platform().read().fpga().bit();
+    let is_asic = sysinfo.platform().read().asic().bit();
+    let git_hash = sysinfo.gitref_rp2350().read().bits();
+    let manufacturer = sysinfo.chip_id().read().manufacturer().bits();
+    let part = sysinfo.chip_id().read().part().bits();
+    let revision = sysinfo.chip_id().read().revision().bits();
 
     info!(
         "SYSINFO
@@ -239,10 +222,11 @@ fn rom() {
 
 // This function will be placed in ram
 #[link_section = link!(ram, ram)]
+#[inline(never)]
 fn ram() {
     let ptr = ram as fn() as *const ();
     defmt::assert!(
-        (0x20000000..0x20040000).contains(&(ptr as u32)),
+        (0x20000000..0x20080000).contains(&(ptr as u32)),
         "ram fn is placed at {} which is not in RAM",
         ptr
     );
@@ -250,26 +234,29 @@ fn ram() {
 
 // This function will be placed in ram
 #[link_section = link!(scratch x, ram_x)]
+#[inline(never)]
 fn ram_x() {
     let ptr = ram_x as fn() as *const ();
     defmt::assert!(
-        (0x20040000..0x20041000).contains(&(ptr as u32)),
-        "ram_x fn is placed at {} which is not in SCRATCH_X",
+        (0x20080000..0x20081000).contains(&(ptr as u32)),
+        "ram_x fn is placed at {} which is not in SRAM4",
         ptr
     );
 }
 
 // This function will be placed in ram
 #[link_section = link!(scratch y, ram_y)]
+#[inline(never)]
 fn ram_y() {
     let ptr = ram_y as fn() as *const ();
     defmt::assert!(
-        (0x20041000..0x20042000).contains(&(ptr as u32)),
-        "ram_y fn is placed at {} which is not in SCRATCH_Y",
+        (0x20081000..0x20082000).contains(&(ptr as u32)),
+        "ram_y fn is placed at {} which is not in SRAM5",
         ptr
     );
 }
 
+/*
 /// Called by the system only when core 1 is overloaded and can't handle all the rendering work, and requests core 0 to render one scan line worth of content.
 #[link_section = ".data"]
 #[interrupt]
@@ -283,3 +270,15 @@ fn SIO_IRQ_PROC0() {
         unsafe { render_line(line_ix) };
     }
 }
+*/
+
+/// Program metadata for `picotool info`
+#[unsafe(link_section = ".bi_entries")]
+#[used]
+pub static PICOTOOL_ENTRIES: [hal::binary_info::EntryAddr; 5] = [
+    hal::binary_info::rp_cargo_bin_name!(),
+    hal::binary_info::rp_cargo_version!(),
+    hal::binary_info::rp_program_description!(c"Pico DVI"),
+    hal::binary_info::rp_cargo_homepage_url!(),
+    hal::binary_info::rp_program_build_attribute!(),
+];

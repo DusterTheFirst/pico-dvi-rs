@@ -1,266 +1,274 @@
-pub mod dma;
-pub mod serializer;
 pub mod timing;
-pub mod tmds;
 
+use crate::hal::pac::{interrupt, Peripherals, DMA, HSTX_CTRL, HSTX_FIFO, IO_BANK0, PADS_BANK0};
 use alloc::boxed::Box;
-use cortex_m::peripheral::NVIC;
-use rp_pico::hal::{
-    gpio::PinId,
-    pac::Interrupt,
-    pio,
-    pwm::{self, ValidPwmOutputPin},
-};
+use timing::{DviTiming, DviTimingLineState, DviTimingState};
 
-use crate::{
-    pac::interrupt,
-    render::{render_line, ScanRender, CORE1_QUEUE, N_LINE_BUFS},
-    DVI_INST,
-};
+use crate::DVI_INST;
 
-use self::{
-    dma::{DmaChannelList, DmaChannels},
-    serializer::DviSerializer,
-    timing::{DviScanlineDmaList, DviTiming, DviTimingLineState, DviTimingState},
-    tmds::TmdsPair,
-};
+/// Bits per pixel
+pub const BPP: usize = 16;
 
-/// Number of channels rendered.
-///
-/// This is usually 3 for RGB, but can also be 1 for grayscale, in which case
-/// the TMDS buffer is output to all three channels.
-pub const N_CHANNELS: usize = 3;
-pub const VERTICAL_REPEAT: usize = 1;
-
-/// The additional time (in scanlines) for the TMDS encoding routine.
-///
-/// If TMDS encoding can reliably happen in less than one scanline time,
-/// this should be 0. If there is variance that sometimes pushes it over
-/// the line, then a value of 1 may eliminate artifacts.
-const TMDS_PIPELINE_SLACK: u32 = 0;
-
-const N_TMDS_BUFFERS: usize = if TMDS_PIPELINE_SLACK > 0 && VERTICAL_REPEAT == 1 {
-    3
-} else {
-    2
-};
-
-/// Dynamic state for DVI output.
-///
-/// This struct corresponds reasonably closely to `struct dvi_inst` in the
-/// PicoDVI source, but with the focused role of holding state needing to
-/// be accessed by the interrupt handler.
-pub struct DviInst<Channels: DmaChannelList> {
+pub struct DviInst {
     timing: DviTiming,
+    dma_pong: bool,
     timing_state: DviTimingState,
-    channels: DmaChannels<Channels>,
-
-    dma_list_vblank_sync: DviScanlineDmaList,
-    dma_list_vblank_nosync: DviScanlineDmaList,
-    dma_list_active: DviScanlineDmaList,
-    dma_list_error: DviScanlineDmaList,
-
-    tmds_buf: Box<[TmdsPair]>,
-    available: [bool; N_TMDS_BUFFERS],
-    scan_render: ScanRender,
+    vblank_line_vsync_off: [u32; 7],
+    vblank_line_vsync_on: [u32; 7],
+    vactive_lines: [Box<[u32]>; 2],
 }
 
-impl<Channels: DmaChannelList> DviInst<Channels> {
-    pub fn new(timing: DviTiming, channels: DmaChannels<Channels>) -> Self {
-        let buf_size = timing.horizontal_words() as usize * N_CHANNELS * N_TMDS_BUFFERS;
-        let buf = alloc::vec![TmdsPair::encode_balanced_approx(0); buf_size];
+#[allow(unused)]
+const fn hstx_cmd_raw(len: u32) -> u32 {
+    (0 << 12) | len
+}
+
+const fn hstx_cmd_raw_repeat(len: u32) -> u32 {
+    (1 << 12) | len
+}
+
+const fn hstx_cmd_tmds(len: u32) -> u32 {
+    (2 << 12) | len
+}
+
+#[allow(unused)]
+const fn hstx_cmd_tmds_repeat(len: u32) -> u32 {
+    (3 << 12) | len
+}
+
+const fn hstx_cmd_nop() -> u32 {
+    0xf << 12
+}
+
+#[inline(never)]
+pub unsafe fn setup_hstx(hstx: &HSTX_CTRL) {
+    unsafe {
+        match BPP {
+            16 => {
+                // configure for rgb 555
+                hstx.expand_tmds().write(|w| {
+                    w.l0_nbits()
+                        .bits(4)
+                        .l0_rot()
+                        .bits(29)
+                        .l1_nbits()
+                        .bits(4)
+                        .l1_rot()
+                        .bits(2)
+                        .l2_nbits()
+                        .bits(4)
+                        .l2_rot()
+                        .bits(7)
+                });
+                hstx.expand_shift().write(|w| {
+                    w.enc_n_shifts()
+                        .bits(2)
+                        .enc_shift()
+                        .bits(16)
+                        .raw_n_shifts()
+                        .bits(1)
+                });
+            }
+            32 => {
+                // configure for rgb 888
+                hstx.expand_tmds().write(|w| {
+                    w.l0_nbits()
+                        .bits(7)
+                        .l0_rot()
+                        .bits(0)
+                        .l1_nbits()
+                        .bits(7)
+                        .l1_rot()
+                        .bits(8)
+                        .l2_nbits()
+                        .bits(7)
+                        .l2_rot()
+                        .bits(16)
+                });
+                hstx.expand_shift().write(|w| {
+                    w.enc_n_shifts()
+                        .bits(1)
+                        .enc_shift()
+                        .bits(0)
+                        .raw_n_shifts()
+                        .bits(1)
+                });
+            }
+            _ => panic!("unsupported pixel depth"),
+        }
+        // default expand_shift is fine for non-doubled 888
+        hstx.csr().write(|w| {
+            w.expand_en()
+                .set_bit()
+                .clkdiv()
+                .bits(5)
+                .n_shifts()
+                .bits(5)
+                .shift()
+                .bits(2)
+                .en()
+                .set_bit()
+        });
+        hstx.bit2().write(|w| w.clk().set_bit());
+        hstx.bit3().write(|w| w.clk().set_bit().inv().set_bit());
+        // Lane assignments for Adafruit feather board;
+        const PERM: [u8; 3] = [2, 1, 0];
+        hstx.bit0()
+            .write(|w| w.sel_p().bits(PERM[0] * 10).sel_n().bits(PERM[0] * 10 + 1));
+        hstx.bit1().write(|w| {
+            w.sel_p()
+                .bits(PERM[0] * 10)
+                .sel_n()
+                .bits(PERM[0] * 10 + 1)
+                .inv()
+                .set_bit()
+        });
+        hstx.bit4()
+            .write(|w| w.sel_p().bits(PERM[1] * 10).sel_n().bits(PERM[1] * 10 + 1));
+        hstx.bit5().write(|w| {
+            w.sel_p()
+                .bits(PERM[1] * 10)
+                .sel_n()
+                .bits(PERM[1] * 10 + 1)
+                .inv()
+                .set_bit()
+        });
+        hstx.bit6()
+            .write(|w| w.sel_p().bits(PERM[2] * 10).sel_n().bits(PERM[2] * 10 + 1));
+        hstx.bit7().write(|w| {
+            w.sel_p()
+                .bits(PERM[2] * 10)
+                .sel_n()
+                .bits(PERM[2] * 10 + 1)
+                .inv()
+                .set_bit()
+        });
+    }
+}
+
+const DREQ_HSTX: u8 = 52;
+
+#[inline(never)]
+pub unsafe fn setup_dma(dma: &DMA, hstx_fifo: &HSTX_FIFO) {
+    let inst = (*DVI_INST.0.get()).assume_init_mut();
+    unsafe {
+        for i in 0..2 {
+            let ch = dma.ch(i);
+            ch.ch_read_addr()
+                .write(|w| w.bits(inst.vblank_line_vsync_off.as_ptr() as u32));
+            ch.ch_write_addr()
+                .write(|w| w.bits(hstx_fifo.fifo().as_ptr() as u32));
+            ch.ch_trans_count()
+                .write(|w| w.bits(inst.vblank_line_vsync_off.len() as u32));
+            ch.ch_al1_ctrl().write(|w| {
+                w.chain_to()
+                    .bits((i ^ 1) as u8)
+                    .data_size()
+                    .bits(2)
+                    .incr_read()
+                    .set_bit()
+                    .treq_sel()
+                    .bits(DREQ_HSTX)
+                    .en()
+                    .set_bit()
+            });
+        }
+        dma.ints0().write(|w| w.ints0().bits(3));
+        dma.inte0().write(|w| w.inte0().bits(3));
+    }
+}
+
+pub unsafe fn start_dma(dma: &DMA) {
+    unsafe {
+        dma.multi_chan_trigger()
+            .write(|w| w.multi_chan_trigger().bits(1));
+    }
+}
+
+const FUNCTION_HSTX: u8 = 0;
+
+// This doesn't use the hal's `Pins` abstraction because the HAL is missing
+// `FunctionHstx`.
+pub unsafe fn setup_pins(pads: &PADS_BANK0, io: &IO_BANK0) {
+    for pin in 12..20 {
+        // TODO: should we be using hardware set/clear/xor?
+        pads.gpio(pin)
+            .modify(|_, w| w.ie().set_bit().od().clear_bit());
+        unsafe {
+            io.gpio(pin)
+                .gpio_ctrl()
+                .write(|w| w.funcsel().bits(FUNCTION_HSTX));
+        }
+        pads.gpio(pin).modify(|_, w| w.iso().clear_bit());
+    }
+}
+
+impl DviInst {
+    pub fn new(timing: DviTiming) -> Self {
+        let vblank_line_vsync_off = [
+            hstx_cmd_raw_repeat(timing.h_front_porch),
+            timing.tmds3_for_sync(false, false),
+            hstx_cmd_raw_repeat(timing.h_sync_width),
+            timing.tmds3_for_sync(true, false),
+            hstx_cmd_raw_repeat(timing.h_back_porch + timing.h_active_pixels),
+            timing.tmds3_for_sync(false, false),
+            hstx_cmd_nop(),
+        ];
+        let vblank_line_vsync_on = [
+            hstx_cmd_raw_repeat(timing.h_front_porch),
+            timing.tmds3_for_sync(false, true),
+            hstx_cmd_raw_repeat(timing.h_sync_width),
+            timing.tmds3_for_sync(true, true),
+            hstx_cmd_raw_repeat(timing.h_back_porch + timing.h_active_pixels),
+            timing.tmds3_for_sync(false, true),
+            hstx_cmd_nop(),
+        ];
+
+        // TODO: less if we use 16bpp
+        let vactive_size = 8 + timing.h_active_pixels as usize * BPP / 32;
+        let vactive_lines = core::array::from_fn(|_| {
+            let mut buf = alloc::vec![!0; vactive_size];
+            buf[0] = hstx_cmd_raw_repeat(timing.h_front_porch);
+            buf[1] = timing.tmds3_for_sync(false, false);
+            buf[2] = hstx_cmd_nop();
+            buf[3] = hstx_cmd_raw_repeat(timing.h_sync_width);
+            buf[4] = timing.tmds3_for_sync(true, false);
+            buf[5] = hstx_cmd_raw_repeat(timing.h_back_porch);
+            buf[6] = timing.tmds3_for_sync(false, false);
+            buf[7] = hstx_cmd_tmds(timing.h_active_pixels);
+            buf.into()
+        });
         DviInst {
             timing,
-            timing_state: Default::default(),
-            channels,
-            dma_list_vblank_sync: Default::default(),
-            dma_list_vblank_nosync: Default::default(),
-            dma_list_active: Default::default(),
-            dma_list_error: Default::default(),
-            tmds_buf: buf.into(),
-            available: [false; N_TMDS_BUFFERS],
-            scan_render: ScanRender::new(),
-        }
-    }
-
-    pub fn setup_dma(&mut self) {
-        self.dma_list_vblank_sync.setup_scanline(
-            &self.timing,
-            &self.channels,
-            DviTimingLineState::Sync,
-            false,
-        );
-        self.dma_list_vblank_nosync.setup_scanline(
-            &self.timing,
-            &self.channels,
-            DviTimingLineState::FrontPorch,
-            false,
-        );
-        self.dma_list_active.setup_scanline(
-            &self.timing,
-            &self.channels,
-            DviTimingLineState::Active,
-            true,
-        );
-        self.dma_list_error.setup_scanline(
-            &self.timing,
-            &self.channels,
-            DviTimingLineState::Active,
-            false,
-        );
-    }
-
-    // Note: does not start serializer
-    pub fn start(&mut self) {
-        self.channels.load_op(&self.dma_list_vblank_nosync);
-        self.channels.start();
-    }
-
-    /// Determine whether a line is available to scan into TMDS.
-    ///
-    /// If a TMDS render is to be scheduled this scanline, return the
-    /// scanline number and a boolean indicating whether the line buffer
-    /// is available.
-    ///
-    /// If no TMDS render is to be scheduled, the scanline number is
-    /// `!0`.
-    ///
-    /// This method also updates the `available` table internally.
-    #[link_section = ".data"]
-    fn line_available(&mut self) -> (u32, bool) {
-        if let Some(y) = self
-            .timing_state
-            .v_scanline_index(&self.timing, TMDS_PIPELINE_SLACK)
-        {
-            if y % VERTICAL_REPEAT as u32 == 0 {
-                let y = y / VERTICAL_REPEAT as u32;
-                let available = self.scan_render.is_line_available(y);
-                let buf_ix = y as usize % N_TMDS_BUFFERS;
-                self.available[buf_ix] = available;
-                return (y, available);
-            }
-        }
-        (!0, false)
-    }
-
-    /// Update the DMA read address to point to the TMDS scanline.
-    ///
-    /// Returns true if an active scanline is available.
-    #[link_section = ".data"]
-    fn update_scanline(&mut self) -> bool {
-        if let Some(y) = self.timing_state.v_scanline_index(&self.timing, 0) {
-            let buf_ix = (y as usize / VERTICAL_REPEAT) % N_TMDS_BUFFERS;
-            if self.available[buf_ix] {
-                let stride = self.timing.horizontal_words() as usize * N_CHANNELS * buf_ix;
-                let buf = unsafe { self.tmds_buf.as_ptr().add(stride) };
-                let channel_stride = if N_CHANNELS == 1 {
-                    0
-                } else {
-                    self.timing.horizontal_words()
-                };
-                self.dma_list_active.update_scanline(buf, channel_stride);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Render a scanline into a TMDS buffer.
-    ///
-    /// This function is called even if the corresponding line buffer is not
-    /// available, so the display list can be advanced.
-    #[link_section = ".data"]
-    fn render(&mut self, y: u32, available: bool) {
-        let buf_ix = y as usize % N_TMDS_BUFFERS;
-        let line_size = self.timing.horizontal_words() as usize * N_CHANNELS;
-        let line_start = line_size * buf_ix;
-        let tmds_slice = &mut self.tmds_buf[line_start..][..line_size];
-        self.scan_render.render_scanline(tmds_slice, y, available);
-    }
-
-    /// Schedule the rendering of a line buffer.
-    ///
-    /// The line buffers are rendered outside the main interrupt handler,
-    /// striped across both cores.
-    #[link_section = ".data"]
-    fn schedule_line_render(&mut self) {
-        let offset = TMDS_PIPELINE_SLACK + (N_LINE_BUFS * VERTICAL_REPEAT) as u32;
-        if let Some(y) = self.timing_state.v_scanline_index(&self.timing, offset) {
-            if y % VERTICAL_REPEAT as u32 == 0 {
-                let y = y / VERTICAL_REPEAT as u32;
-                self.scan_render.schedule_line_render(y);
-            }
+            dma_pong: false,
+            timing_state: DviTimingState::new(2),
+            vblank_line_vsync_off,
+            vblank_line_vsync_on,
+            vactive_lines,
         }
     }
 }
 
-/// We dedicate core 1 to running the primary video interrupt and also
-/// background rendering tasks.
-#[link_section = ".data"]
-pub fn core1_main<PIO, SliceId, Pos, Neg, RedPos, RedNeg, GreenPos, GreenNeg, BluePos, BlueNeg>(
-    mut serializer: DviSerializer<
-        PIO,
-        SliceId,
-        Pos,
-        Neg,
-        RedPos,
-        RedNeg,
-        GreenPos,
-        GreenNeg,
-        BluePos,
-        BlueNeg,
-    >,
-) -> !
-where
-    PIO: pio::PIOExt,
-    SliceId: pwm::SliceId,
-    Pos: PinId + ValidPwmOutputPin<SliceId, pwm::A>,
-    Neg: PinId + ValidPwmOutputPin<SliceId, pwm::B>,
-    RedPos: PinId,
-    RedNeg: PinId,
-    GreenPos: PinId,
-    GreenNeg: PinId,
-    BluePos: PinId,
-    BlueNeg: PinId,
-{
-    unsafe {
-        NVIC::unmask(Interrupt::DMA_IRQ_0);
-    }
-    serializer.wait_fifos_full();
-    serializer.enable();
-    loop {
-        let line_ix = CORE1_QUEUE.peek_blocking();
-        // Safety: exclusive access to the line buffer is granted
-        // when the render is scheduled to a core.
-        unsafe { render_line(line_ix) };
-        CORE1_QUEUE.remove();
-    }
-}
-
-/// Called on core 1 every scan line by the DMA controller
+// In Rust 2024, this would need to be marked unsafe, but the cortex-m-rt crate
+// won't accept it. So 2021 it is.
 #[link_section = ".data"]
 #[interrupt]
 fn DMA_IRQ_0() {
-    // Safety: interrupts are enabled (and thus the interrupt handler is
-    // called) only after the instance has been initialized. After
-    // initialization, the interrupt handles has exclusive access.
-    let inst = unsafe { (*DVI_INST.0.get()).assume_init_mut() };
-    let _ = inst.channels.check_int();
-    inst.timing_state.advance(&inst.timing);
-    let (y, available) = inst.line_available();
-    // wait for all three channels to load their last op
-    inst.channels.wait_for_load(inst.timing.horizontal_words());
-    if inst.update_scanline() {
-        inst.channels.load_op(&inst.dma_list_active);
-    } else {
-        match inst.timing_state.v_state(&inst.timing) {
-            DviTimingLineState::Active => inst.channels.load_op(&inst.dma_list_error),
-            DviTimingLineState::Sync => inst.channels.load_op(&inst.dma_list_vblank_sync),
-            _ => inst.channels.load_op(&inst.dma_list_vblank_nosync),
-        }
+    unsafe {
+        let inst = (*DVI_INST.0.get()).assume_init_mut();
+        let ch_num = inst.dma_pong as usize;
+        let dma = &mut Peripherals::steal().DMA;
+        let ch = dma.ch(ch_num);
+        inst.dma_pong = !inst.dma_pong;
+        let v_state = inst.timing_state.v_state(&inst.timing);
+        let cmds = match v_state {
+            DviTimingLineState::Active => &inst.vactive_lines[ch_num],
+            DviTimingLineState::Sync => &inst.vblank_line_vsync_on[..],
+            _ => &inst.vblank_line_vsync_off[..],
+        };
+        dma.intr().write(|w| w.bits(1 << ch_num));
+        ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
+        ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
+        inst.timing_state.advance(&inst.timing);
     }
-    if y < 0x8000_0000 {
-        inst.render(y, available);
-    }
-    inst.schedule_line_render();
 }
