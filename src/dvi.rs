@@ -1,7 +1,14 @@
 pub mod timing;
+pub mod tmds;
 
-use crate::hal::pac::{interrupt, Peripherals, DMA, HSTX_CTRL, HSTX_FIFO, IO_BANK0, PADS_BANK0};
+use crate::{
+    hal::pac::{
+        interrupt, Interrupt, Peripherals, DMA, HSTX_CTRL, HSTX_FIFO, IO_BANK0, PADS_BANK0,
+    },
+    render::{render_line, ScanRender, CORE1_QUEUE, N_LINE_BUFS},
+};
 use alloc::boxed::Box;
+use cortex_m::peripheral::NVIC;
 use timing::{DviTiming, DviTimingLineState, DviTimingState, SYNC_LINE_WORDS};
 
 use crate::DVI_INST;
@@ -9,13 +16,33 @@ use crate::DVI_INST;
 /// Bits per pixel
 pub const BPP: usize = 16;
 
+/// Currently only 1 is supported
+pub const VERTICAL_REPEAT: usize = 1;
+
+/// The additional time (in scanlines) for the video encoding routine.
+///
+/// If video encoding can reliably happen in less than one scanline time,
+/// this should be 0. If there is variance that sometimes pushes it over
+/// the line, then a value of 1 may eliminate artifacts.
+///
+/// Note: currently only 0 is supported.
+const VIDEO_PIPELINE_SLACK: u32 = 0;
+
+const N_VIDEO_BUFFERS: usize = if VIDEO_PIPELINE_SLACK > 0 && VERTICAL_REPEAT == 1 {
+    3
+} else {
+    2
+};
+
 pub struct DviInst {
     timing: DviTiming,
     dma_pong: bool,
     timing_state: DviTimingState,
     vblank_line_vsync_off: [u32; SYNC_LINE_WORDS],
     vblank_line_vsync_on: [u32; SYNC_LINE_WORDS],
-    vactive_lines: [Box<[u32]>; 2],
+    vactive_lines: [Box<[u32]>; N_VIDEO_BUFFERS],
+    available: [bool; N_VIDEO_BUFFERS],
+    scan_render: ScanRender,
 }
 
 #[allow(unused)]
@@ -203,32 +230,115 @@ pub unsafe fn setup_pins(pads: &PADS_BANK0, io: &IO_BANK0) {
     }
 }
 
+// Number of TMDS expansion words prefacing video data in an active line.
+const ACTIVE_SYNC_WORDS: usize = 7;
+
 impl DviInst {
     pub fn new(timing: DviTiming) -> Self {
         let vblank_line_vsync_off = timing.make_sync_line(false);
         let vblank_line_vsync_on = timing.make_sync_line(true);
 
-        let vactive_size = 8 + timing.h_active_pixels as usize * BPP / 32;
+        let vactive_size = ACTIVE_SYNC_WORDS + timing.h_active_pixels as usize * BPP / 32;
         let vactive_lines = core::array::from_fn(|_| {
             let mut buf = alloc::vec![!0; vactive_size];
             buf[0] = hstx_cmd_raw_repeat(timing.h_front_porch);
             buf[1] = timing.tmds3_for_sync(false, false);
-            buf[2] = hstx_cmd_nop();
-            buf[3] = hstx_cmd_raw_repeat(timing.h_sync_width);
-            buf[4] = timing.tmds3_for_sync(true, false);
-            buf[5] = hstx_cmd_raw_repeat(timing.h_back_porch);
-            buf[6] = timing.tmds3_for_sync(false, false);
-            buf[7] = hstx_cmd_tmds(timing.h_active_pixels);
+            buf[2] = hstx_cmd_raw_repeat(timing.h_sync_width);
+            buf[3] = timing.tmds3_for_sync(true, false);
+            buf[4] = hstx_cmd_raw_repeat(timing.h_back_porch);
+            buf[5] = timing.tmds3_for_sync(false, false);
+            buf[6] = hstx_cmd_tmds(timing.h_active_pixels);
             buf.into()
         });
+        // The number of video lines that have been set up by the
+        // time of the first interrupt.
+        const INIT_TIMING_STATE: u32 = 2;
         DviInst {
             timing,
             dma_pong: false,
-            timing_state: DviTimingState::new(2),
+            timing_state: DviTimingState::new(INIT_TIMING_STATE),
             vblank_line_vsync_off,
             vblank_line_vsync_on,
             vactive_lines,
+            available: [false; N_VIDEO_BUFFERS],
+            scan_render: ScanRender::new(),
         }
+    }
+
+    /// Get a reference to an active video scanline, if available
+    #[link_section = ".data"]
+    fn active_video_line(&mut self) -> Option<&[u32]> {
+        if let Some(y) = self.timing_state.v_scanline_index(&self.timing, 0) {
+            let buf_ix = (y as usize / VERTICAL_REPEAT) % N_VIDEO_BUFFERS;
+            if self.available[buf_ix] {
+                return Some(&self.vactive_lines[buf_ix]);
+            }
+        }
+        None
+    }
+
+    /// Determine whether a line is available to scan into video.
+    ///
+    /// If a video render is to be scheduled this scanline, return the
+    /// scanline number and a boolean indicating whether the line buffer
+    /// is available.
+    ///
+    /// If no video render is to be scheduled, the scanline number is
+    /// `!0`.
+    ///
+    /// This method also updates the `available` table internally.
+    #[link_section = ".data"]
+    fn line_available(&mut self) -> (u32, bool) {
+        if let Some(y) = self
+            .timing_state
+            .v_scanline_index(&self.timing, VIDEO_PIPELINE_SLACK)
+        {
+            if y % VERTICAL_REPEAT as u32 == 0 {
+                let y = y / VERTICAL_REPEAT as u32;
+                let available = self.scan_render.is_line_available(y);
+                let buf_ix = y as usize % N_VIDEO_BUFFERS;
+                self.available[buf_ix] = available;
+                return (y, available);
+            }
+        }
+        (!0, false)
+    }
+
+    /// Render a scanline into a video buffer.
+    ///
+    /// This function is called even if the corresponding line buffer is not
+    /// available, so the display list can be advanced.
+    #[link_section = ".data"]
+    fn render_video_line(&mut self, y: u32, available: bool) {
+        let buf_ix = y as usize % N_VIDEO_BUFFERS;
+        let video_slice = &mut self.vactive_lines[buf_ix][ACTIVE_SYNC_WORDS..];
+        self.scan_render.render_scanline(video_slice, y, available);
+    }
+
+    /// Schedule rendering of a line
+    #[link_section = ".data"]
+    fn schedule_line_render(&mut self) {
+        let offset = VIDEO_PIPELINE_SLACK + (N_LINE_BUFS * VERTICAL_REPEAT) as u32;
+        if let Some(y) = self.timing_state.v_scanline_index(&self.timing, offset) {
+            if y % VERTICAL_REPEAT as u32 == 0 {
+                let y_line = y / VERTICAL_REPEAT as u32;
+                self.scan_render.schedule_line_render(y_line);
+            }
+        }
+    }
+}
+
+#[link_section = ".data"]
+pub fn core1_main() -> ! {
+    unsafe {
+        NVIC::unmask(Interrupt::DMA_IRQ_0);
+    }
+    loop {
+        let line_ix = CORE1_QUEUE.peek_blocking();
+        // Safety: exclusive access to the line buffer is granted
+        // when the render is scheduled to a core.
+        unsafe { render_line(line_ix) };
+        CORE1_QUEUE.remove();
     }
 }
 
@@ -243,15 +353,29 @@ fn DMA_IRQ_0() {
         let dma = &mut Peripherals::steal().DMA;
         let ch = dma.ch(ch_num);
         inst.dma_pong = !inst.dma_pong;
-        let v_state = inst.timing_state.v_state(&inst.timing);
-        let cmds = match v_state {
-            DviTimingLineState::Active => &inst.vactive_lines[ch_num],
-            DviTimingLineState::Sync => &inst.vblank_line_vsync_on[..],
-            _ => &inst.vblank_line_vsync_off[..],
+        let cmds = if let Some(cmds) = inst.active_video_line() {
+            cmds
+        } else {
+            let v_state = inst.timing_state.v_state(&inst.timing);
+            match v_state {
+                // TODO: should be error line, but probably little harm
+                DviTimingLineState::Active => &inst.vactive_lines[0],
+                DviTimingLineState::Sync => &inst.vblank_line_vsync_on[..],
+                _ => &inst.vblank_line_vsync_off[..],
+            }
         };
         dma.intr().write(|w| w.bits(1 << ch_num));
         ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
         ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
+        // Possible TODO: combine line_available and render_video_line, as
+        // there's not much value in having them separate. (It's likely the
+        // original motivation was to have the latter maybe outside the
+        // interrupt)
+        let (y, available) = inst.line_available();
+        if y as i32 >= 0 {
+            inst.render_video_line(y, available);
+        }
+        inst.schedule_line_render();
         inst.timing_state.advance(&inst.timing);
     }
 }

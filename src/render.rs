@@ -11,9 +11,9 @@ pub use palette::{
 
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
-use rp_pico::{
-    hal::{sio::SioFifo, Sio},
-    pac,
+use crate::{
+    dvi::BPP,
+    hal::{pac, sio::SioFifo, Sio},
 };
 
 use crate::{
@@ -93,15 +93,17 @@ extern "C" {
         stride: u32,
     ) -> *const u32;
 
+    fn video_scan(scan_list: *const u32, input: *const u32, output: *mut u32) -> *const u32;
+
     fn render_engine(render_list: *const u32, output: *mut u32, y: u32);
 }
 
-pub const fn rgb(r: u8, g: u8, b: u8) -> [TmdsPair; 3] {
-    [
-        TmdsPair::encode_balanced_approx(b),
-        TmdsPair::encode_balanced_approx(g),
-        TmdsPair::encode_balanced_approx(r),
-    ]
+pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
+    if BPP == 16 {
+        (b as u32 >> 3) | ((g as u32 & 0xf8) << 2) | ((r as u32 & 0xf8) << 7)
+    } else {
+        panic!("unsupported color depth")
+    }
 }
 
 /// Creates a TMDS pair per color channel of a 24 bit RGB color.
@@ -109,12 +111,12 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> [TmdsPair; 3] {
 /// The input color is of the form 0xRRGGBB.
 ///
 /// If each channel is already separated out, use [`rgb`] instead.
-pub const fn xrgb(color: u32) -> [TmdsPair; 3] {
-    [
-        TmdsPair::encode_balanced_approx(color as u8),
-        TmdsPair::encode_balanced_approx((color >> 8) as u8),
-        TmdsPair::encode_balanced_approx((color >> 16) as u8),
-    ]
+pub const fn xrgb(color: u32) -> u32 {
+    if BPP == 32 {
+        color
+    } else {
+        rgb(color as u8, (color >> 8) as u8, (color >> 16) as u8)
+    }
 }
 
 impl ScanRender {
@@ -143,9 +145,11 @@ impl ScanRender {
         }
     }
 
+    /// Render one scanline from the line buffer into the provided video buffer.
     #[link_section = ".data"]
+    // TODO: probably should be inline-able, this was probably for inspecting disasm
     #[inline(never)]
-    pub fn render_scanline(&mut self, tmds_buf: &mut [TmdsPair], y: u32, available: bool) {
+    pub fn render_scanline(&mut self, video_buf: &mut [u32], y: u32, available: bool) {
         unsafe {
             if y == 0 {
                 self.scan_next = self.display_list.scan.get().as_ptr();
@@ -158,8 +162,7 @@ impl ScanRender {
             if available {
                 let line_ix = y as usize % N_LINE_BUFS;
                 let line_buf_ptr = LINE_BUFS[line_ix].buf.as_ptr();
-                self.scan_next =
-                    tmds_scan(self.scan_ptr, line_buf_ptr, tmds_buf.as_mut_ptr(), 1280);
+                self.scan_next = video_scan(self.scan_ptr, line_buf_ptr, video_buf.as_mut_ptr());
             }
             self.stripe_remaining -= 1;
         }
@@ -187,7 +190,6 @@ impl ScanRender {
             return;
         }
         let render_ptr = self.render_ptr;
-        // TODO: set ptr, y in linebuf
         // Safety: we currently own access to the line buffer.
         let line_buf = unsafe { &mut LINE_BUFS[line_ix as usize] };
         line_buf.render_ptr = unsafe { render_ptr.add(2) };
@@ -209,7 +211,7 @@ impl ScanRender {
             if self.fifo.is_write_ready() {
                 PENDING[line_ix].store(true, Ordering::Relaxed);
                 // Writes to channels are generally considered to be release,
-                // but the implementation in rp2040-hal lacks such a fence, so
+                // but the implementation in rp235x-hal lacks such a fence, so
                 // we include it explicitly.
                 compiler_fence(Ordering::Release);
                 self.fifo.write(line_ix as u32);

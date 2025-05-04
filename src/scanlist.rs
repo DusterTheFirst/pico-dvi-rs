@@ -10,6 +10,10 @@ extern "C" {
     fn tmds_scan_1bpp_pal();
 
     fn tmds_scan_4bpp_pal();
+
+    fn video_scan_solid_16();
+
+    fn video_scan_stop();
 }
 
 /// A display list for TMDS scanout.
@@ -64,20 +68,13 @@ impl ScanlistBuilder {
     }
 
     pub fn end_stripe(&mut self) {
-        self.v.push(tmds_scan_stop as u32);
+        self.v.push(video_scan_stop as u32);
     }
 
     /// Generate a run of solid color.
-    ///
-    /// This method only works when aligned to 2-pixel boundaries.
-    pub fn solid(&mut self, count: u32, color: [TmdsPair; 3]) {
-        self.v.extend_from_slice(&[
-            tmds_scan_solid_tmds as u32,
-            count / 2,
-            color[0].raw(),
-            color[1].raw(),
-            color[2].raw(),
-        ]);
+    pub fn solid(&mut self, count: u32, color: u32) {
+        self.v
+            .extend_from_slice(&[video_scan_solid_16 as u32, count, color]);
         self.x += count;
     }
 

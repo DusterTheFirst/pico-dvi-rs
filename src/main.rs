@@ -6,10 +6,10 @@ extern crate alloc;
 use core::{arch::global_asm, cell::UnsafeCell, mem::MaybeUninit};
 
 use defmt_rtt as _;
+use dvi::core1_main;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
 use cortex_m::peripheral::NVIC;
-use cortex_m_rt::interrupt;
 use defmt::info;
 use embedded_alloc::Heap;
 use embedded_hal::{delay::DelayNs, digital::OutputPin};
@@ -17,13 +17,13 @@ use hal::{
     dma::{Channel, DMAExt, CH0, CH1, CH2, CH3, CH4, CH5},
     gpio::PinState,
     multicore::{Multicore, Stack},
+    pac::{interrupt, Interrupt},
     pwm,
     sio::{Sio, SioFifo},
     watchdog::Watchdog,
 };
+use render::{init_display_swapcell, render_line};
 use rp235x_hal as hal;
-
-use hal::pac::Interrupt;
 
 use crate::{
     clock::init_clocks,
@@ -32,10 +32,11 @@ use crate::{
 
 mod clock;
 //mod demo;
+mod demo2;
 mod dvi;
 mod link;
-//mod render;
-//mod scanlist;
+mod render;
+mod scanlist;
 
 /// The number of HSTX bits per system clock.
 ///
@@ -131,36 +132,11 @@ fn entry() -> ! {
     );
 
     // LED is pin 7 on Feather 2350 board. We don't have board crates yet for Pico 2
-    let mut led_pin = pins.gpio7.into_push_pull_output_in_state(PinState::Low);
+    let led_pin = pins.gpio7.into_push_pull_output_in_state(PinState::Low);
 
-    let pwm_slices = pwm::Slices::new(peripherals.PWM, &mut peripherals.RESETS);
-    let dma = peripherals.DMA.split(&mut peripherals.RESETS);
+    let _dma = peripherals.DMA.split(&mut peripherals.RESETS);
 
-    /*
-    {
-        // Safety: the DMA_IRQ_0 handler is not enabled yet. We have exclusive access to this static.
-        let inst = unsafe { (*DVI_INST.0.get()).write(DviInst::new(timing, dma_channels)) };
-        inst.setup_dma();
-        inst.start();
-    }
-    let mut fifo = single_cycle_io.fifo;
-    let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
-    let cores = mc.cores();
-    let core1 = &mut cores[1];
-    core1
-        .spawn(unsafe { &mut CORE1_STACK.mem }, move || {
-            core1_main(serializer)
-        })
-        .unwrap();
-    // Safety: enable interrupt for fifo to receive line render requests.
-    // Transfer ownership of this end of the fifo to the interrupt handler.
-    unsafe {
-        FIFO = MaybeUninit::new(fifo);
-        NVIC::unmask(Interrupt::SIO_IRQ_PROC0);
-    }
-    */
-
-    let mut timer = hal::Timer::new_timer0(peripherals.TIMER0, &mut peripherals.RESETS, &clocks);
+    let width = timing.h_active_pixels;
 
     unsafe {
         (*DVI_INST.0.get()).write(DviInst::new(timing));
@@ -180,12 +156,23 @@ fn entry() -> ! {
         dvi::start_dma(&periphs.DMA);
     }
 
-    loop {
-        led_pin.set_high().unwrap();
-        timer.delay_ms(500);
-        led_pin.set_low().unwrap();
-        timer.delay_ms(500);
+    let mut fifo = single_cycle_io.fifo;
+    let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
+    let cores = mc.cores();
+    let core1 = &mut cores[1];
+    core1
+        .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || core1_main())
+        .unwrap();
+    // Safety: enable interrupt for fifo to receive line render requests.
+    // Transfer ownership of this end of the fifo to the interrupt handler.
+    unsafe {
+        FIFO = MaybeUninit::new(fifo);
+        NVIC::unmask(Interrupt::SIO_IRQ_FIFO);
     }
+
+    init_display_swapcell(width);
+
+    demo2::demo(led_pin);
 }
 
 fn sysinfo(sysinfo: &hal::pac::SYSINFO) {
@@ -256,11 +243,10 @@ fn ram_y() {
     );
 }
 
-/*
 /// Called by the system only when core 1 is overloaded and can't handle all the rendering work, and requests core 0 to render one scan line worth of content.
 #[link_section = ".data"]
 #[interrupt]
-fn SIO_IRQ_PROC0() {
+fn SIO_IRQ_FIFO() {
     // Safety: this interrupt handler has exclusive access to this
     // end of the fifo.
     let fifo = unsafe { FIFO.assume_init_mut() };
@@ -270,7 +256,6 @@ fn SIO_IRQ_PROC0() {
         unsafe { render_line(line_ix) };
     }
 }
-*/
 
 /// Program metadata for `picotool info`
 #[unsafe(link_section = ".bi_entries")]
