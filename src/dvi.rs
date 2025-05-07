@@ -2,7 +2,7 @@ pub mod timing;
 
 use crate::hal::pac::{interrupt, Peripherals, DMA, HSTX_CTRL, HSTX_FIFO, IO_BANK0, PADS_BANK0};
 use alloc::boxed::Box;
-use timing::{DviTiming, DviTimingLineState, DviTimingState};
+use timing::{DviTiming, DviTimingLineState, DviTimingState, SYNC_LINE_WORDS};
 
 use crate::DVI_INST;
 
@@ -13,8 +13,8 @@ pub struct DviInst {
     timing: DviTiming,
     dma_pong: bool,
     timing_state: DviTimingState,
-    vblank_line_vsync_off: [u32; 7],
-    vblank_line_vsync_on: [u32; 7],
+    vblank_line_vsync_off: [u32; SYNC_LINE_WORDS],
+    vblank_line_vsync_on: [u32; SYNC_LINE_WORDS],
     vactive_lines: [Box<[u32]>; 2],
 }
 
@@ -205,26 +205,9 @@ pub unsafe fn setup_pins(pads: &PADS_BANK0, io: &IO_BANK0) {
 
 impl DviInst {
     pub fn new(timing: DviTiming) -> Self {
-        let vblank_line_vsync_off = [
-            hstx_cmd_raw_repeat(timing.h_front_porch),
-            timing.tmds3_for_sync(false, false),
-            hstx_cmd_raw_repeat(timing.h_sync_width),
-            timing.tmds3_for_sync(true, false),
-            hstx_cmd_raw_repeat(timing.h_back_porch + timing.h_active_pixels),
-            timing.tmds3_for_sync(false, false),
-            hstx_cmd_nop(),
-        ];
-        let vblank_line_vsync_on = [
-            hstx_cmd_raw_repeat(timing.h_front_porch),
-            timing.tmds3_for_sync(false, true),
-            hstx_cmd_raw_repeat(timing.h_sync_width),
-            timing.tmds3_for_sync(true, true),
-            hstx_cmd_raw_repeat(timing.h_back_porch + timing.h_active_pixels),
-            timing.tmds3_for_sync(false, true),
-            hstx_cmd_nop(),
-        ];
+        let vblank_line_vsync_off = timing.make_sync_line(false);
+        let vblank_line_vsync_on = timing.make_sync_line(true);
 
-        // TODO: less if we use 16bpp
         let vactive_size = 8 + timing.h_active_pixels as usize * BPP / 32;
         let vactive_lines = core::array::from_fn(|_| {
             let mut buf = alloc::vec![!0; vactive_size];
