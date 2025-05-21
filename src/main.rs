@@ -156,23 +156,23 @@ fn entry() -> ! {
         dvi::start_dma(&periphs.DMA);
     }
 
+    init_display_swapcell(width);
+
     let mut fifo = single_cycle_io.fifo;
     let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
     let cores = mc.cores();
     let core1 = &mut cores[1];
     core1
-        .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || core1_main())
+        .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || demo2::demo(led_pin))
         .unwrap();
     // Safety: enable interrupt for fifo to receive line render requests.
     // Transfer ownership of this end of the fifo to the interrupt handler.
     unsafe {
-        FIFO = MaybeUninit::new(fifo);
-        NVIC::unmask(Interrupt::SIO_IRQ_FIFO);
+        //FIFO = MaybeUninit::new(fifo);
+        //NVIC::unmask(Interrupt::SIO_IRQ_FIFO);
     }
 
-    init_display_swapcell(width);
-
-    demo2::demo(led_pin);
+    core1_main();
 }
 
 fn sysinfo(sysinfo: &hal::pac::SYSINFO) {
