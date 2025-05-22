@@ -353,12 +353,12 @@ video_scan_1bpp_pal_16:
     video_scan_1bpp_pal_16_2bits #28 #30
     bhs 2b
 3:
-    adds r5, #32
+    adds r5, #32 // r5 = count % 32
     beq 5f
     ldmia r1!, {r4}
 4:
     subs r5, #2
-    and r3, r4, #3
+    ubfx r3, r4, #0, #2
     lsr r4, #2
     ldr r3, [r6, r3, lsl #2]
     stmia r2!, {r3}
@@ -394,11 +394,11 @@ video_scan_1bpp_pal_16:
     bhs 7b
 8:
     adds r5, #32 // r5 = count % 32
-    beq 12f
+    beq 13f
     ldmia r1!, {r4}
+    subs r5, #2
     ubfx r3, r4, #0, #1
     ldr r3, [r6, r3, lsl #2]
-    subs r5, #2
     strh r3, [r2]!
     bls 12f
 9:

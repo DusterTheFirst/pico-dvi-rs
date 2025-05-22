@@ -1,10 +1,11 @@
+use alloc::format;
 use embedded_hal::digital::StatefulOutputPin;
 use rp235x_hal::gpio::{FunctionSioOutput, Pin, PullDown};
 
 use crate::{
     dvi::VERTICAL_REPEAT,
     hal::gpio::PinId,
-    render::{end_display_list, rgb, start_display_list},
+    render::{end_display_list, rgb, start_display_list, BW_PALETTE_1BPP, FONT_HEIGHT},
 };
 
 struct Counter<P: PinId> {
@@ -23,10 +24,10 @@ impl<P: PinId> Counter<P> {
     }
 }
 
-fn colorbars<P: PinId>(_counter: &Counter<P>) {
+fn colorbars<P: PinId>(counter: &Counter<P>) {
     let height = 480 / VERTICAL_REPEAT as u32;
     let (mut rb, mut sb) = start_display_list();
-    rb.begin_stripe(height);
+    rb.begin_stripe(height - FONT_HEIGHT);
     rb.end_stripe();
     sb.begin_stripe(320 / VERTICAL_REPEAT as u32);
     sb.solid(92, rgb(0xc0, 0xc0, 0xc0));
@@ -46,7 +47,7 @@ fn colorbars<P: PinId>(_counter: &Counter<P>) {
     sb.solid(90, rgb(0x13, 0x13, 0x13));
     sb.solid(92, rgb(0xc0, 0xc0, 0xc0));
     sb.end_stripe();
-    sb.begin_stripe(120 / VERTICAL_REPEAT as u32);
+    sb.begin_stripe(120 / VERTICAL_REPEAT as u32 - FONT_HEIGHT);
     sb.solid(114, rgb(0, 0x21, 0x4c));
     sb.solid(114, rgb(0xff, 0xff, 0xff));
     sb.solid(114, rgb(0x32, 0, 0x6a));
@@ -55,6 +56,16 @@ fn colorbars<P: PinId>(_counter: &Counter<P>) {
     sb.solid(30, rgb(0x13, 0x13, 0x13));
     sb.solid(30, rgb(0x1d, 0x1d, 0x1d));
     sb.solid(92, rgb(0x13, 0x13, 0x13));
+    sb.end_stripe();
+
+    rb.begin_stripe(FONT_HEIGHT);
+    let text = format!("Hello pico-dvi-rs, frame {}", counter.count);
+    let width = rb.text(&text);
+    let width = width + width % 2;
+    rb.end_stripe();
+    sb.begin_stripe(FONT_HEIGHT);
+    sb.pal_1bpp(width, &BW_PALETTE_1BPP);
+    sb.solid(640 - width, rgb(0, 0, 0));
     sb.end_stripe();
     end_display_list(rb, sb);
 }

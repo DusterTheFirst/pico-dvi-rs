@@ -9,6 +9,8 @@ pub use palette::{
     init_4bpp_palette, quantized_1bpp_palette, PaletteEntry, BW_PALETTE, GLOBAL_PALETTE,
 };
 
+pub use palette::{Palette1bpp, BW_PALETTE_1BPP};
+
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
 use crate::{

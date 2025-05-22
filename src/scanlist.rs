@@ -1,6 +1,9 @@
 use alloc::vec::Vec;
 
-use crate::{dvi::tmds::TmdsPair, render::PaletteEntry};
+use crate::{
+    dvi::tmds::TmdsPair,
+    render::{Palette1bpp, PaletteEntry},
+};
 
 extern "C" {
     fn tmds_scan_stop();
@@ -12,6 +15,8 @@ extern "C" {
     fn tmds_scan_4bpp_pal();
 
     fn video_scan_solid_16();
+
+    fn video_scan_1bpp_pal_16();
 
     fn video_scan_stop();
 }
@@ -80,11 +85,11 @@ impl ScanlistBuilder {
 
     /// Safety note: we take a reference to the palette, but the
     /// lifetime must extend until it is used.
-    pub fn pal_1bpp(&mut self, count: u32, palette: &[PaletteEntry; 4]) {
+    pub fn pal_1bpp(&mut self, count: u32, palette: &Palette1bpp) {
         self.v.extend_from_slice(&[
-            tmds_scan_1bpp_pal as u32,
-            count / 2,
-            palette.as_ptr() as u32,
+            video_scan_1bpp_pal_16 as u32,
+            count,
+            palette as *const _ as u32,
         ]);
         self.x += count;
     }

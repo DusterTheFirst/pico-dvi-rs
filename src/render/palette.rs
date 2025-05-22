@@ -1,5 +1,8 @@
 use crate::dvi::tmds::TmdsPair;
 
+use super::rgb;
+
+// TODO: delete
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PaletteEntry {
@@ -8,6 +11,10 @@ pub struct PaletteEntry {
     red: TmdsPair,
     padding: u32,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Palette1bpp([u32; 4]);
 
 impl PaletteEntry {
     /// Create a palette entry for a pair of gray pixels.
@@ -350,3 +357,18 @@ const GRAY_4BPP_CONST: [TmdsPair; 256] = [
     TmdsPair::encode_pair(0xf0, 0xfc), // (+2, -3)
     TmdsPair::encode_pair(0xff, 0xfe), // (+0, -1)
 ];
+
+impl Palette1bpp {
+    // Arguments are 16bpp; use `rgb`
+    const fn new(bg: u32, fg: u32) -> Self {
+        Self([
+            bg | (bg << 16),
+            fg | (bg << 16),
+            bg | (fg << 16),
+            fg | (fg << 16),
+        ])
+    }
+}
+
+#[link_section = ".scratch_x"]
+pub static BW_PALETTE_1BPP: Palette1bpp = Palette1bpp::new(rgb(0, 0, 0), rgb(255, 255, 255));

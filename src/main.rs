@@ -163,7 +163,9 @@ fn entry() -> ! {
     let cores = mc.cores();
     let core1 = &mut cores[1];
     core1
-        .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || demo2::demo(led_pin))
+        .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || {
+            demo2::demo(led_pin)
+        })
         .unwrap();
     // Safety: enable interrupt for fifo to receive line render requests.
     // Transfer ownership of this end of the fifo to the interrupt handler.
