@@ -76,6 +76,9 @@ impl ScanlistBuilder {
 
     /// Safety note: we take a reference to the palette, but the
     /// lifetime must extend until it is used.
+    // TODO: this really should be marked as unsafe, or we should make a safe
+    // variant that stores the palette in the display list. Either way, it should
+    // be consistent with the 4bpp method.
     pub fn pal_1bpp(&mut self, count: u32, palette: &Palette1bpp) {
         self.v.extend_from_slice(&[
             video_scan_1bpp_pal_16 as u32,
@@ -87,7 +90,7 @@ impl ScanlistBuilder {
 
     /// Safety note: we take a reference to the palette, but the
     /// lifetime must extend until it is used.
-    pub fn pal_4bpp(&mut self, count: u32, palette: &Palette4bppFast) {
+    pub unsafe fn pal_4bpp(&mut self, count: u32, palette: &Palette4bppFast) {
         self.v.extend_from_slice(&[
             video_scan_4bpp_pal_16 as u32,
             count,

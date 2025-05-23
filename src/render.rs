@@ -5,7 +5,6 @@ mod renderlist;
 mod swapcell;
 
 pub use font::FONT_HEIGHT;
-pub use palette::{quantized_1bpp_palette, PaletteEntry};
 
 pub use palette::{Palette1bpp, Palette4bppFast, BW_PALETTE_1BPP};
 
@@ -99,7 +98,7 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     }
 }
 
-/// Creates a TMDS pair per color channel of a 24 bit RGB color.
+/// Creates a packed color for a 24 bit RGB color.
 ///
 /// The input color is of the form 0xRRGGBB.
 ///
@@ -108,7 +107,7 @@ pub const fn xrgb(color: u32) -> u32 {
     if BPP == 32 {
         color
     } else {
-        rgb(color as u8, (color >> 8) as u8, (color >> 16) as u8)
+        rgb((color >> 16) as u8, (color >> 8) as u8, color as u8)
     }
 }
 

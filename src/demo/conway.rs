@@ -9,10 +9,7 @@ use alloc::format;
 use super::Counter;
 use crate::{
     dvi::VERTICAL_REPEAT,
-    render::{
-        end_display_list, quantized_1bpp_palette, rgb, start_display_list, xrgb, PaletteEntry,
-        FONT_HEIGHT,
-    },
+    render::{end_display_list, rgb, start_display_list, xrgb, FONT_HEIGHT},
 };
 
 // Sadly these can not be generic on GameOfLife struct due to limitations with const-generics

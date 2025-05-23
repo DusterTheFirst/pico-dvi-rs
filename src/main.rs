@@ -77,7 +77,8 @@ fn macro_entry() -> ! {
 }
 
 const PALETTE: &[u32; 16] = &[
-    0x000000, 0xffffff, 0x9d9d9d, 0x8b6fe0, 0x3326be, 0x2b3c49, 0x2264a4, 0x3189eb, 0x6be2f7, 0x27cea3, 0x1a8944, 0x4e482f, 0x32261b, 0x845700, 0xf2a231, 0xefdcb2,
+    0x000000, 0xffffff, 0x9d9d9d, 0xe06f8b, 0xbe2633, 0x493c2b, 0xa46422, 0xeb8931, 0xf7e26b,
+    0xa3ce27, 0x44891a, 0x2f484e, 0x1b2632, 0x5784, 0x31a2f2, 0xb2dcef,
 ];
 
 #[link_section = ".data"]
@@ -110,7 +111,7 @@ fn entry() -> ! {
     let timing = VGA_TIMING;
 
     // External high-speed crystal on the pico board is 12Mhz
-    let clocks = init_clocks(
+    let _clocks = init_clocks(
         peripherals.XOSC,
         peripherals.ROSC,
         peripherals.CLOCKS,
@@ -165,12 +166,18 @@ fn entry() -> ! {
             demo::demo(led_pin)
         })
         .unwrap();
+    // TODO: since we now have the dvi interrupt running on core 0, to spill
+    // rendering tasks we'd need to get this spawned on core 1 also. The best
+    // thing would be to figure out why running dvi on core 1 doesn't work, but
+    // in any case it should probably be rethought some.
+    /*
     // Safety: enable interrupt for fifo to receive line render requests.
     // Transfer ownership of this end of the fifo to the interrupt handler.
     unsafe {
-        //FIFO = MaybeUninit::new(fifo);
-        //NVIC::unmask(Interrupt::SIO_IRQ_FIFO);
+        FIFO = MaybeUninit::new(fifo);
+        NVIC::unmask(Interrupt::SIO_IRQ_FIFO);
     }
+    */
 
     core1_main();
 }

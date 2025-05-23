@@ -1,5 +1,4 @@
 pub mod timing;
-pub mod tmds;
 
 use crate::{
     hal::pac::{
