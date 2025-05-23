@@ -9,20 +9,17 @@ use defmt_rtt as _;
 use dvi::core1_main;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
-use cortex_m::peripheral::NVIC;
 use defmt::info;
 use embedded_alloc::Heap;
-use embedded_hal::{delay::DelayNs, digital::OutputPin};
 use hal::{
-    dma::{Channel, DMAExt, CH0, CH1, CH2, CH3, CH4, CH5},
+    dma::DMAExt,
     gpio::PinState,
     multicore::{Multicore, Stack},
     pac::{interrupt, Interrupt},
-    pwm,
     sio::{Sio, SioFifo},
     watchdog::Watchdog,
 };
-use render::{init_display_swapcell, render_line};
+use render::{init_display_swapcell, render_line, Palette4bppFast};
 use rp235x_hal as hal;
 
 use crate::{
@@ -31,8 +28,7 @@ use crate::{
 };
 
 mod clock;
-//mod demo;
-mod demo2;
+mod demo;
 mod dvi;
 mod link;
 mod render;
@@ -70,7 +66,7 @@ unsafe impl Sync for DviInstWrapper {}
 
 static DVI_INST: DviInstWrapper = DviInstWrapper(UnsafeCell::new(MaybeUninit::uninit()));
 
-static mut CORE1_STACK: Stack<256> = Stack::new();
+static mut CORE1_STACK: Stack<65536> = Stack::new();
 
 static mut FIFO: MaybeUninit<SioFifo> = MaybeUninit::uninit();
 
@@ -81,9 +77,11 @@ fn macro_entry() -> ! {
 }
 
 const PALETTE: &[u32; 16] = &[
-    0x000000, 0xffffff, 0x9d9d9d, 0xe06f8b, 0xbe2633, 0x493c2b, 0xa46422, 0xeb8931, 0xf7e26b,
-    0xa3ce27, 0x44891a, 0x2f484e, 0x1b2632, 0x5784, 0x31a2f2, 0xb2dcef,
+    0x000000, 0xffffff, 0x9d9d9d, 0x8b6fe0, 0x3326be, 0x2b3c49, 0x2264a4, 0x3189eb, 0x6be2f7, 0x27cea3, 0x1a8944, 0x4e482f, 0x32261b, 0x845700, 0xf2a231, 0xefdcb2,
 ];
+
+#[link_section = ".data"]
+pub static PALETTE_4BPP: Palette4bppFast = Palette4bppFast::new(PALETTE);
 
 fn entry() -> ! {
     info!("Program start");
@@ -164,7 +162,7 @@ fn entry() -> ! {
     let core1 = &mut cores[1];
     core1
         .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || {
-            demo2::demo(led_pin)
+            demo::demo(led_pin)
         })
         .unwrap();
     // Safety: enable interrupt for fifo to receive line render requests.

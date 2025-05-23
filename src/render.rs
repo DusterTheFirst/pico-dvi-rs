@@ -5,11 +5,9 @@ mod renderlist;
 mod swapcell;
 
 pub use font::FONT_HEIGHT;
-pub use palette::{
-    init_4bpp_palette, quantized_1bpp_palette, PaletteEntry, BW_PALETTE, GLOBAL_PALETTE,
-};
+pub use palette::{quantized_1bpp_palette, PaletteEntry};
 
-pub use palette::{Palette1bpp, BW_PALETTE_1BPP};
+pub use palette::{Palette1bpp, Palette4bppFast, BW_PALETTE_1BPP};
 
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
@@ -19,7 +17,7 @@ use crate::{
 };
 
 use crate::{
-    dvi::{tmds::TmdsPair, VERTICAL_REPEAT},
+    dvi::VERTICAL_REPEAT,
     scanlist::{Scanlist, ScanlistBuilder},
 };
 
@@ -88,13 +86,6 @@ core::arch::global_asm! {
 }
 
 extern "C" {
-    fn tmds_scan(
-        scan_list: *const u32,
-        input: *const u32,
-        output: *mut TmdsPair,
-        stride: u32,
-    ) -> *const u32;
-
     fn video_scan(scan_list: *const u32, input: *const u32, output: *mut u32) -> *const u32;
 
     fn render_engine(render_list: *const u32, output: *mut u32, y: u32);

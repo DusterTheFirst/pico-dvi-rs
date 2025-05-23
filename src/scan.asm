@@ -442,35 +442,36 @@ video_scan_4bpp_pal_16:
     bhs 2b
 3:
     adds r5, #8 // r5 = count % 8
+    ldmia r0!, {r4}
     beq 5f
-    ldmia r1!, {r4}
-    uxtb r3, r4
+    ldmia r1!, {r7}
+    subs r5, #2
+    uxtb r3, r7
+    ldr r3, [r6, r3, lsl #2]
+    stmia r2!, {r3}
+    bls 4f
+    ubfx r3, r7, #8, #8
     ldr r3, [r6, r3, lsl #2]
     subs r5, #2
     stmia r2!, {r3}
     bls 4f
-    ubfx r3, r4, #8, #8
-    ldr r3, [r6, r3, lsl #2]
-    subs r5, #2
-    stmia r2!, {r3}
-    bls 4f
-    ubfx r3, r4, #16, #8
+    ubfx r3, r7, #16, #8
     ldr r3, [r6, r3, lsl #2]
     subs r5, #2
     stmia r2!, {r3}
     bls 4f
     // count % 8 == 7
-    ubfx r3, r4, #24, #8
+    ubfx r3, r7, #24, #8
     ldrh r3, [r6, r3, lsl #2]
     strh r3, [r2]!
-    ldmia r0!, {r4, r5, r6}
+    ldmia r0!, {r5, r6}
     bx r4
     .align
 4:
     it ne
     subne r2, #2
 5:
-    ldmia r0!, {r4, r5, r6}
+    ldmia r0!, {r5, r6}
     bx r4
 
 // TODO finish

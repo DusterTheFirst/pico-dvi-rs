@@ -45,7 +45,6 @@ pub struct DviInst {
     scan_render: ScanRender,
 }
 
-#[allow(unused)]
 const fn hstx_cmd_raw(len: u32) -> u32 {
     (0 << 12) | len
 }
@@ -63,6 +62,7 @@ const fn hstx_cmd_tmds_repeat(len: u32) -> u32 {
     (3 << 12) | len
 }
 
+#[allow(unused)]
 const fn hstx_cmd_nop() -> u32 {
     0xf << 12
 }
