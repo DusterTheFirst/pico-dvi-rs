@@ -303,7 +303,7 @@ video_scan_solid_16:
     tst r2, #2
     itt ne
     subne r5, #1
-    strhne r6, [r2]!
+    strhne r6, [r2], #2
     // Should this be done by caller?
     orr r6, r6, r6, lsl #16
     subs r5, #4
@@ -319,7 +319,7 @@ video_scan_solid_16:
     stmiahs r2!, {r6}
     tst r5, #1
     it ne
-    strhne r6, [r2]!
+    strhne r6, [r2], #2
     ldmia r0!, {r4, r5, r6}
     bx r4
 
@@ -377,7 +377,7 @@ video_scan_1bpp_pal_16:
     subs r5, #32
     ubfx r3, r4, #0, #1
     ldr r3, [r6, r3, lsl #2]
-    strh r3, [r2]!
+    strh r3, [r2], #2
     video_scan_1bpp_pal_16_2bits #1 #3
     video_scan_1bpp_pal_16_2bits #5 #7
     video_scan_1bpp_pal_16_2bits #9 #11
@@ -390,7 +390,7 @@ video_scan_1bpp_pal_16:
     stmia r2!, {r3}
     ubfx r3, r4, #31, #1
     ldr r3, [r6, r3, lsl #2]
-    strh r3, [r2]!
+    strh r3, [r2], #2
     bhs 7b
 8:
     adds r5, #32 // r5 = count % 32
@@ -399,7 +399,7 @@ video_scan_1bpp_pal_16:
     subs r5, #2
     ubfx r3, r4, #0, #1
     ldr r3, [r6, r3, lsl #2]
-    strh r3, [r2]!
+    strh r3, [r2], #2
     bls 12f
 9:
     subs r5, #2
@@ -412,7 +412,7 @@ video_scan_1bpp_pal_16:
     blo 13f
     ubfx r3, r4, #1, #1
     ldr r3, [r6, r3, lsl #2]
-    strh r3, [r2]!
+    strh r3, [r2], #2
 13:
     ldmia r0!, {r4, r5, r6}
     bx r4
@@ -463,7 +463,7 @@ video_scan_4bpp_pal_16:
     // count % 8 == 7
     ubfx r3, r7, #24, #8
     ldrh r3, [r6, r3, lsl #2]
-    strh r3, [r2]!
+    strh r3, [r2], #2
     ldmia r0!, {r5, r6}
     bx r4
     .align
