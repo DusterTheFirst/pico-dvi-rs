@@ -26,6 +26,7 @@ pub struct DviTiming {
 // Number of trailing sync words to encode as raw
 const SYNC_TRAILING_RAW: usize = 8;
 pub const SYNC_LINE_WORDS: usize = 7 + SYNC_TRAILING_RAW;
+pub const SYNC_LINE_ONLY_WORDS: usize = 3 + SYNC_TRAILING_RAW;
 
 impl DviTiming {
     fn total_lines(&self) -> u32 {
@@ -64,13 +65,36 @@ impl DviTiming {
         let mut line = [h_sync_off; SYNC_LINE_WORDS];
         line[0] = hstx_cmd_raw_repeat(self.h_front_porch);
         // line[1] is already h_sync_off
-        line[2] = h_sync_off;
         line[2] = hstx_cmd_raw_repeat(self.h_sync_width);
         line[3] = self.tmds3_for_sync(true, v_sync);
         const TAIL: u32 = SYNC_TRAILING_RAW as u32;
         line[4] = hstx_cmd_raw_repeat(self.h_back_porch + self.h_active_pixels - TAIL);
         // line[5] is already h_sync_off
         line[6] = hstx_cmd_raw(TAIL);
+        line
+    }
+
+    pub fn make_sync_pulse(&self, v_sync: bool) -> [u32; SYNC_LINE_WORDS] {
+        let h_sync_off = self.tmds3_for_sync(false, v_sync);
+        let mut line = [h_sync_off; SYNC_LINE_WORDS];
+        line[0] = hstx_cmd_raw_repeat(self.h_front_porch);
+        // line[1] is already h_sync_off
+        line[2] = hstx_cmd_raw_repeat(self.h_sync_width);
+        line[3] = self.tmds3_for_sync(true, v_sync);
+        const TAIL: u32 = SYNC_TRAILING_RAW as u32;
+        line[4] = hstx_cmd_raw_repeat(self.h_back_porch - TAIL);
+        // line[5] is already h_sync_off
+        line[6] = hstx_cmd_raw(TAIL);
+        line
+    }
+
+    pub fn make_sync_line_only(&self, v_sync: bool) -> [u32; SYNC_LINE_ONLY_WORDS] {
+        let h_sync_off = self.tmds3_for_sync(false, v_sync);
+        let mut line = [h_sync_off; SYNC_LINE_ONLY_WORDS];
+        const TAIL: u32 = SYNC_TRAILING_RAW as u32;
+        line[0] = hstx_cmd_raw_repeat(self.h_active_pixels - TAIL);
+        // line[1] is already h_sync_off
+        line[2] = hstx_cmd_raw(TAIL);
         line
     }
 }

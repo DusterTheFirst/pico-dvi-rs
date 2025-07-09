@@ -1,10 +1,9 @@
 pub mod timing;
 
 use crate::{
-    hal::pac::{
+    dvi::timing::SYNC_LINE_ONLY_WORDS, hal::pac::{
         interrupt, Interrupt, Peripherals, DMA, HSTX_CTRL, HSTX_FIFO, IO_BANK0, PADS_BANK0,
-    },
-    render::{render_line, ScanRender, CORE1_QUEUE, N_LINE_BUFS},
+    }, render::{render_line, ScanRender, CORE1_QUEUE, N_LINE_BUFS}
 };
 use alloc::boxed::Box;
 use cortex_m::peripheral::NVIC;
@@ -42,6 +41,13 @@ pub struct DviInst {
     vactive_lines: [Box<[u32]>; N_VIDEO_BUFFERS],
     available: [bool; N_VIDEO_BUFFERS],
     scan_render: ScanRender,
+
+    // New state
+    sync_pulse_vsync_off: [u32; SYNC_LINE_WORDS],
+    sync_pulse_vsync_on: [u32; SYNC_LINE_WORDS],
+    sync_line_only_vsync_off: [u32; SYNC_LINE_ONLY_WORDS],
+    sync_line_only_vsync_on: [u32; SYNC_LINE_ONLY_WORDS],
+    err_line: [u32; SYNC_LINE_ONLY_WORDS],
 }
 
 const fn hstx_cmd_raw(len: u32) -> u32 {
@@ -179,13 +185,18 @@ pub unsafe fn setup_dma(dma: &DMA, hstx_fifo: &HSTX_FIFO) {
     let inst = (*DVI_INST.0.get()).assume_init_mut();
     unsafe {
         for i in 0..2 {
+            let cmds = if i == 0 {
+                &inst.sync_pulse_vsync_off[..]
+            } else {
+                &inst.sync_line_only_vsync_off[..]
+            };
             let ch = dma.ch(i);
             ch.ch_read_addr()
-                .write(|w| w.bits(inst.vblank_line_vsync_off.as_ptr() as u32));
+                .write(|w| w.bits(cmds.as_ptr() as u32));
             ch.ch_write_addr()
                 .write(|w| w.bits(hstx_fifo.fifo().as_ptr() as u32));
             ch.ch_trans_count()
-                .write(|w| w.bits(inst.vblank_line_vsync_off.len() as u32));
+                .write(|w| w.bits(cmds.len() as u32));
             ch.ch_al1_ctrl().write(|w| {
                 w.chain_to()
                     .bits((i ^ 1) as u8)
@@ -249,6 +260,16 @@ impl DviInst {
             buf[6] = hstx_cmd_tmds(timing.h_active_pixels);
             buf.into()
         });
+
+        let sync_pulse_vsync_off = timing.make_sync_pulse(false);
+        let sync_pulse_vsync_on = timing.make_sync_pulse(true);
+        let sync_line_only_vsync_off = timing.make_sync_line_only(false);
+        let sync_line_only_vsync_on = timing.make_sync_line_only(true);
+        let mut err_line = [0x7c007c00; SYNC_LINE_ONLY_WORDS];
+        // TODO: correct logic for constants
+        const TAIL: u32 = 16;
+        err_line[0] = hstx_cmd_tmds_repeat(timing.h_active_pixels - TAIL);
+        err_line[2] = hstx_cmd_tmds(TAIL);
         // The number of video lines that have been set up by the
         // time of the first interrupt.
         const INIT_TIMING_STATE: u32 = 2;
@@ -258,6 +279,11 @@ impl DviInst {
             timing_state: DviTimingState::new(INIT_TIMING_STATE),
             vblank_line_vsync_off,
             vblank_line_vsync_on,
+            sync_pulse_vsync_off,
+            sync_pulse_vsync_on,
+            sync_line_only_vsync_off,
+            sync_line_only_vsync_on,
+            err_line,
             vactive_lines,
             available: [false; N_VIDEO_BUFFERS],
             scan_render: ScanRender::new(),
@@ -352,29 +378,26 @@ fn DMA_IRQ_0() {
         let dma = &mut Peripherals::steal().DMA;
         let ch = dma.ch(ch_num);
         inst.dma_pong = !inst.dma_pong;
-        let cmds = if let Some(cmds) = inst.active_video_line() {
-            cmds
+        if inst.dma_pong {
+            // interrupt at end of sync pulse, set up next sync pulse
+            let cmds = match inst.timing_state.v_state(&inst.timing) {
+                DviTimingLineState::Sync => &inst.sync_pulse_vsync_on[..],
+                _ => &inst.sync_pulse_vsync_off[..]
+            };
+            dma.intr().write(|w| w.bits(1 << ch_num));
+            ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
+            ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
         } else {
-            let v_state = inst.timing_state.v_state(&inst.timing);
-            match v_state {
-                // TODO: should be error line, but probably little harm
-                DviTimingLineState::Active => &inst.vactive_lines[0],
-                DviTimingLineState::Sync => &inst.vblank_line_vsync_on[..],
-                _ => &inst.vblank_line_vsync_off[..],
-            }
-        };
-        dma.intr().write(|w| w.bits(1 << ch_num));
-        ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
-        ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
-        // Possible TODO: combine line_available and render_video_line, as
-        // there's not much value in having them separate. (It's likely the
-        // original motivation was to have the latter maybe outside the
-        // interrupt)
-        let (y, available) = inst.line_available();
-        if y as i32 >= 0 {
-            inst.render_video_line(y, available);
+            // interrupt at end of line, set up next line
+            let cmds = match inst.timing_state.v_state(&inst.timing) {
+                DviTimingLineState::Active => &inst.err_line[..],
+                DviTimingLineState::Sync => &inst.sync_line_only_vsync_on[..],
+                _ => &inst.sync_line_only_vsync_off[..]
+            };
+            dma.intr().write(|w| w.bits(1 << ch_num));
+            ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
+            ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
+            inst.timing_state.advance(&inst.timing);
         }
-        inst.schedule_line_render();
-        inst.timing_state.advance(&inst.timing);
     }
 }
