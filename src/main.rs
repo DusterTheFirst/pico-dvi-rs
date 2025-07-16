@@ -3,8 +3,9 @@
 
 extern crate alloc;
 
-use core::{arch::global_asm, cell::UnsafeCell, mem::MaybeUninit};
+use core::{arch::global_asm, cell::UnsafeCell, mem::MaybeUninit, sync::atomic::AtomicBool};
 
+use alloc::boxed::Box;
 use defmt_rtt as _;
 use dvi::core1_main;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
@@ -24,7 +25,8 @@ use rp235x_hal as hal;
 
 use crate::{
     clock::init_clocks,
-    dvi::{timing::VGA_TIMING, DviInst},
+    dvi::{timing::VGA_TIMING, DviInst, DviOut},
+    render::N_LINE_BUFS,
 };
 
 mod clock;
@@ -53,7 +55,12 @@ global_asm! {
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
+// Perhaps there should be one struct with all this state, and
+// multiple MaybeUninit fields.
+
 struct DviInstWrapper(UnsafeCell<MaybeUninit<DviInst>>);
+
+struct VideoLineWrapper(UnsafeCell<MaybeUninit<Box<[u32]>>>);
 
 // Safety: access to the instance is indeed shared across threads,
 // as it is initialized in the main thread and the interrupt should
@@ -64,7 +71,11 @@ struct DviInstWrapper(UnsafeCell<MaybeUninit<DviInst>>);
 // precise). When `SyncUnsafeCell` is stabilized, use that instead.
 unsafe impl Sync for DviInstWrapper {}
 
+unsafe impl Sync for VideoLineWrapper {}
+
 static DVI_INST: DviInstWrapper = DviInstWrapper(UnsafeCell::new(MaybeUninit::uninit()));
+
+static DVI_OUT: DviOut = DviOut::new();
 
 static mut CORE1_STACK: Stack<65536> = Stack::new();
 

@@ -8,6 +8,8 @@ pub use font::FONT_HEIGHT;
 
 pub use palette::{Palette1bpp, Palette4bppFast, BW_PALETTE_1BPP};
 
+pub use queue::Queue;
+
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
 use crate::{
@@ -21,7 +23,6 @@ use crate::{
 };
 
 use self::{
-    queue::Queue,
     renderlist::{Renderlist, RenderlistBuilder},
     swapcell::SwapCell,
 };

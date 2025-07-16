@@ -55,6 +55,18 @@ impl<const SIZE: usize> Queue<SIZE> {
         self.rd_ix.store(next, Ordering::Release);
     }
 
+    /// Take an item, blocking until available.
+    pub fn take_blocking(&self) -> u32 {
+        let rd_ix = self.rd_ix.load(Ordering::Relaxed);
+        while rd_ix == self.wr_ix.load(Ordering::Acquire) {
+            wfe();
+        }
+        let item = self.buf[rd_ix as usize].load(Ordering::Relaxed);
+        let next = (rd_ix + 1) % SIZE as u32;
+        self.rd_ix.store(next, Ordering::Release);
+        item
+    }
+
     pub fn len(&self) -> usize {
         let rd_ix = self.rd_ix.load(Ordering::Acquire);
         let wr_ix = self.wr_ix.load(Ordering::Relaxed);
