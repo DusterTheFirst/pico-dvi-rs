@@ -3,9 +3,8 @@
 
 extern crate alloc;
 
-use core::{arch::global_asm, cell::UnsafeCell, mem::MaybeUninit, sync::atomic::AtomicBool};
+use core::{arch::global_asm, cell::UnsafeCell, mem::MaybeUninit};
 
-use alloc::boxed::Box;
 use defmt_rtt as _;
 use dvi::core1_main;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
@@ -16,17 +15,16 @@ use hal::{
     dma::DMAExt,
     gpio::PinState,
     multicore::{Multicore, Stack},
-    pac::{interrupt, Interrupt},
-    sio::{Sio, SioFifo},
+    pac::Interrupt,
+    sio::Sio,
     watchdog::Watchdog,
 };
-use render::{init_display_swapcell, render_line, Palette4bppFast};
+use render::{init_display_swapcell, Palette4bppFast};
 use rp235x_hal as hal;
 
 use crate::{
     clock::init_clocks,
     dvi::{timing::VGA_TIMING, DviInst, DviOut},
-    render::N_LINE_BUFS,
 };
 
 mod clock;
@@ -60,8 +58,6 @@ pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
 struct DviInstWrapper(UnsafeCell<MaybeUninit<DviInst>>);
 
-struct VideoLineWrapper(UnsafeCell<MaybeUninit<Box<[u32]>>>);
-
 // Safety: access to the instance is indeed shared across threads,
 // as it is initialized in the main thread and the interrupt should
 // be modeled as another thread (and may be on a different core),
@@ -71,15 +67,11 @@ struct VideoLineWrapper(UnsafeCell<MaybeUninit<Box<[u32]>>>);
 // precise). When `SyncUnsafeCell` is stabilized, use that instead.
 unsafe impl Sync for DviInstWrapper {}
 
-unsafe impl Sync for VideoLineWrapper {}
-
 static DVI_INST: DviInstWrapper = DviInstWrapper(UnsafeCell::new(MaybeUninit::uninit()));
 
 static DVI_OUT: DviOut = DviOut::new();
 
 static mut CORE1_STACK: Stack<65536> = Stack::new();
-
-static mut FIFO: MaybeUninit<SioFifo> = MaybeUninit::uninit();
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
 #[hal::entry]
@@ -259,20 +251,6 @@ fn ram_y() {
         "ram_y fn is placed at {} which is not in SRAM5",
         ptr
     );
-}
-
-/// Called by the system only when core 1 is overloaded and can't handle all the rendering work, and requests core 0 to render one scan line worth of content.
-#[link_section = ".data"]
-#[interrupt]
-fn SIO_IRQ_FIFO() {
-    // Safety: this interrupt handler has exclusive access to this
-    // end of the fifo.
-    let fifo = unsafe { FIFO.assume_init_mut() };
-    while let Some(line_ix) = fifo.read() {
-        // Safety: exclusive access to the line buffer is granted
-        // when the render is scheduled to a core.
-        unsafe { render_line(line_ix) };
-    }
 }
 
 /// Program metadata for `picotool info`

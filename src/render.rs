@@ -10,11 +10,8 @@ pub use palette::{Palette1bpp, Palette4bppFast, BW_PALETTE_1BPP};
 
 pub use queue::Queue;
 
-use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
-
 use crate::{
     dvi::BPP,
-    hal::{pac, sio::SioFifo, Sio},
 };
 
 use crate::{
@@ -27,30 +24,20 @@ use self::{
     swapcell::SwapCell,
 };
 
-pub const N_LINE_BUFS: usize = 4;
-
 pub struct ScanRender {
     display_list: DisplayList,
     stripe_remaining: u32,
     scan_ptr: *const u32,
     scan_next: *const u32,
-    assigned: [bool; N_LINE_BUFS],
-    fifo: SioFifo,
     render_ptr: *const u32,
     render_y: u32,
+    last_y: u32,
 }
 
 /// Size of a line buffer in u32 units.
 const LINE_BUF_SIZE: usize = 256;
 
-static mut LINE_BUFS: [LineBuf; N_LINE_BUFS] = [LineBuf::zero(); N_LINE_BUFS];
-const ATOMIC_FALSE: AtomicBool = AtomicBool::new(false);
-static PENDING: [AtomicBool; N_LINE_BUFS] = [ATOMIC_FALSE; N_LINE_BUFS];
-
-/// The maximum number of lines that can be scheduled on core1.
-const MAX_CORE1_PENDING: usize = 1;
-const LINE_QUEUE_SIZE: usize = (MAX_CORE1_PENDING + 1).next_power_of_two();
-pub static CORE1_QUEUE: Queue<LINE_QUEUE_SIZE> = Queue::new();
+static mut LINE_BUF: LineBuf = LineBuf::zero();
 
 /// A complete display list.
 ///
@@ -64,18 +51,13 @@ static DISPLAY_LIST_SWAPCELL: SwapCell<DisplayList> = SwapCell::new();
 
 #[derive(Clone, Copy)]
 pub struct LineBuf {
-    render_ptr: *const u32,
-    /// Y coordinate relative to top of stripe.
-    y: u32,
     buf: [u32; LINE_BUF_SIZE],
 }
 
 impl LineBuf {
     const fn zero() -> Self {
-        let render_ptr = core::ptr::null();
-        let y = 0;
         let buf = [0; LINE_BUF_SIZE];
-        LineBuf { render_ptr, y, buf }
+        LineBuf { buf }
     }
 }
 
@@ -117,12 +99,6 @@ impl ScanRender {
         let stripe_remaining = 0;
         let scan_ptr = core::ptr::null();
         let scan_next = core::ptr::null();
-        // Safety: it makes sense for two cores to both have access to the
-        // fifo, as it's designed for that purpose. A better PAC API might
-        // allow us to express this safely.
-        let pac = unsafe { pac::Peripherals::steal() };
-        let sio = Sio::new(pac.SIO);
-        let fifo = sio.fifo;
         let render_ptr = core::ptr::null();
         let render_y = 0;
         let display_list = DisplayList::new(640, 480 / VERTICAL_REPEAT as u32);
@@ -130,11 +106,10 @@ impl ScanRender {
             stripe_remaining,
             scan_ptr,
             scan_next,
-            assigned: [false; N_LINE_BUFS],
-            fifo,
             render_ptr,
             render_y,
             display_list,
+            last_y: 0,
         }
     }
 
@@ -142,88 +117,39 @@ impl ScanRender {
     #[link_section = ".data"]
     // TODO: probably should be inline-able, this was probably for inspecting disasm
     #[inline(never)]
-    pub fn render_scanline(&mut self, video_buf: &mut [u32], y: u32, available: bool) {
+    pub fn render_scanline(&mut self, video_buf: &mut [u32], y: u32) {
         unsafe {
-            if y == 0 {
+            if y <= self.last_y {
+                DISPLAY_LIST_SWAPCELL.try_swap_by_system(&mut self.display_list);
+
+                self.render_ptr = self.display_list.render.get().as_ptr();
+                self.render_y = 0;
                 self.scan_next = self.display_list.scan.get().as_ptr();
+                self.stripe_remaining = 0;
             }
             if self.stripe_remaining == 0 {
                 self.stripe_remaining = self.scan_next.read();
                 self.scan_ptr = self.scan_next.add(1);
                 // TODO: set desperate scan_next
             }
-            if available {
-                let line_ix = y as usize % N_LINE_BUFS;
-                let line_buf_ptr = LINE_BUFS[line_ix].buf.as_ptr();
-                self.scan_next = video_scan(self.scan_ptr, line_buf_ptr, video_buf.as_mut_ptr());
+            // we could just stack allocate the tmp, as we're currently
+            // completely synchronous.
+            let line_buf_ptr = LINE_BUF.buf.as_mut_ptr();
+            let render_ptr = self.render_ptr.add(2);
+            render_engine(render_ptr, line_buf_ptr, self.render_y);
+            self.render_y += 1;
+            let stripe_height = self.render_ptr.read();
+            // TODO: this assumes we don't miss; can be made much more robust.
+            if self.render_y == stripe_height {
+                let jump = self.render_ptr.add(1).read() as usize;
+                self.render_ptr = self.display_list.render.get().as_ptr().add(jump);
+                self.render_y = 0;
             }
+            self.scan_next = video_scan(self.scan_ptr, line_buf_ptr, video_buf.as_mut_ptr());
             self.stripe_remaining -= 1;
+            self.last_y = y;
         }
     }
-
-    #[link_section = ".data"]
-    pub fn is_line_available(&self, y: u32) -> bool {
-        let line_ix = y as usize % N_LINE_BUFS;
-        self.assigned[line_ix] && !PENDING[line_ix].load(Ordering::Relaxed)
-    }
-
-    #[link_section = ".data"]
-    pub fn schedule_line_render(&mut self, y: u32) {
-        if y == 0 {
-            // The swap is scheduled on scanline 0, but we'd want to move this
-            // earlier if we wanted to do more stuff like palettes.
-            DISPLAY_LIST_SWAPCELL.try_swap_by_system(&mut self.display_list);
-
-            self.render_ptr = self.display_list.render.get().as_ptr();
-            self.render_y = 0;
-        }
-        let line_ix = y as usize % N_LINE_BUFS;
-        if PENDING[line_ix].load(Ordering::Relaxed) {
-            self.assigned[line_ix] = false;
-            return;
-        }
-        let render_ptr = self.render_ptr;
-        // Safety: we currently own access to the line buffer.
-        let line_buf = unsafe { &mut LINE_BUFS[line_ix as usize] };
-        line_buf.render_ptr = unsafe { render_ptr.add(2) };
-        line_buf.y = self.render_y;
-        self.render_y += 1;
-        let stripe_height = unsafe { render_ptr.read() };
-        if self.render_y == stripe_height {
-            let jump = unsafe { render_ptr.add(1).read() as usize };
-            self.render_ptr = unsafe { self.display_list.render.get().as_ptr().add(jump) };
-            self.render_y = 0;
-        }
-        if CORE1_QUEUE.len() < MAX_CORE1_PENDING {
-            // schedule on core1
-            PENDING[line_ix].store(true, Ordering::Relaxed);
-            CORE1_QUEUE.push_unchecked(line_ix as u32);
-            self.assigned[line_ix] = true;
-        } else {
-            // try to schedule on core0
-            if self.fifo.is_write_ready() {
-                PENDING[line_ix].store(true, Ordering::Relaxed);
-                // Writes to channels are generally considered to be release,
-                // but the implementation in rp235x-hal lacks such a fence, so
-                // we include it explicitly.
-                compiler_fence(Ordering::Release);
-                self.fifo.write(line_ix as u32);
-                self.assigned[line_ix] = true;
-            } else {
-                self.assigned[line_ix] = false;
-            }
-        }
-    }
-}
-
-/// Entry point for rendering a line.
-///
-/// This can be called by either core.
-#[link_section = ".data"]
-pub unsafe fn render_line(line_ix: u32) {
-    let line_buf = &mut LINE_BUFS[line_ix as usize];
-    render_engine(line_buf.render_ptr, line_buf.buf.as_mut_ptr(), line_buf.y);
-    PENDING[line_ix as usize].store(false, Ordering::Release);
 }
 
 impl DisplayList {

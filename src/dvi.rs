@@ -15,7 +15,7 @@ use crate::{
     hal::pac::{
         interrupt, Interrupt, Peripherals, DMA, HSTX_CTRL, HSTX_FIFO, IO_BANK0, PADS_BANK0,
     },
-    render::{render_line, Queue, ScanRender, CORE1_QUEUE, N_LINE_BUFS},
+    render::{Queue, ScanRender},
     DVI_OUT,
 };
 use cortex_m::peripheral::NVIC;
@@ -55,11 +55,6 @@ pub struct DviInst {
     timing: DviTiming,
     dma_pong: bool,
     timing_state: DviTimingState,
-    vblank_line_vsync_off: [u32; SYNC_LINE_WORDS],
-    vblank_line_vsync_on: [u32; SYNC_LINE_WORDS],
-    vactive_lines: [Box<[u32]>; N_VIDEO_BUFFERS],
-    available: [bool; N_VIDEO_BUFFERS],
-    scan_render: ScanRender,
 
     // New state
     sync_pulse_vsync_off: [u32; SYNC_LINE_WORDS],
@@ -208,8 +203,10 @@ pub unsafe fn setup_hstx(hstx: &HSTX_CTRL) {
         });
         hstx.bit2().write(|w| w.clk().set_bit());
         hstx.bit3().write(|w| w.clk().set_bit().inv().set_bit());
-        // Lane assignments for Adafruit feather board;
+        // Lane assignments for Adafruit feather board
         const PERM: [u8; 3] = [2, 1, 0];
+        // Lane assignments for Olimex RP2350pc
+        //const PERM: [u8; 3] = [0, 2, 1];
         hstx.bit0()
             .write(|w| w.sel_p().bits(PERM[0] * 10).sel_n().bits(PERM[0] * 10 + 1));
         hstx.bit1().write(|w| {
@@ -303,27 +300,8 @@ pub unsafe fn setup_pins(pads: &PADS_BANK0, io: &IO_BANK0) {
     }
 }
 
-// Number of TMDS expansion words prefacing video data in an active line.
-const ACTIVE_SYNC_WORDS: usize = 7;
-
 impl DviInst {
     pub fn new(timing: DviTiming) -> Self {
-        let vblank_line_vsync_off = timing.make_sync_line(false);
-        let vblank_line_vsync_on = timing.make_sync_line(true);
-
-        let vactive_size = ACTIVE_SYNC_WORDS + timing.h_active_pixels as usize * BPP / 32;
-        let vactive_lines = core::array::from_fn(|_| {
-            let mut buf = alloc::vec![!0; vactive_size];
-            buf[0] = hstx_cmd_raw_repeat(timing.h_front_porch);
-            buf[1] = timing.tmds3_for_sync(false, false);
-            buf[2] = hstx_cmd_raw_repeat(timing.h_sync_width);
-            buf[3] = timing.tmds3_for_sync(true, false);
-            buf[4] = hstx_cmd_raw_repeat(timing.h_back_porch);
-            buf[5] = timing.tmds3_for_sync(false, false);
-            buf[6] = hstx_cmd_tmds(timing.h_active_pixels);
-            buf.into()
-        });
-
         let sync_pulse_vsync_off = timing.make_sync_pulse(false);
         let sync_pulse_vsync_on = timing.make_sync_pulse(true);
         let sync_line_only_vsync_off = timing.make_sync_line_only(false);
@@ -350,94 +328,26 @@ impl DviInst {
             timing,
             dma_pong: false,
             timing_state: DviTimingState::new(INIT_TIMING_STATE),
-            vblank_line_vsync_off,
-            vblank_line_vsync_on,
             sync_pulse_vsync_off,
             sync_pulse_vsync_on,
             sync_line_only_vsync_off,
             sync_line_only_vsync_on,
             err_line,
-            vactive_lines,
-            available: [false; N_VIDEO_BUFFERS],
-            scan_render: ScanRender::new(),
             missed: [false; N_VIDEO_BUFFERS],
-        }
-    }
-
-    /// Get a reference to an active video scanline, if available
-    #[link_section = ".data"]
-    fn active_video_line(&mut self) -> Option<&[u32]> {
-        if let Some(y) = self.timing_state.v_scanline_index(&self.timing, 0) {
-            let buf_ix = (y as usize / VERTICAL_REPEAT) % N_VIDEO_BUFFERS;
-            if self.available[buf_ix] {
-                return Some(&self.vactive_lines[buf_ix]);
-            }
-        }
-        None
-    }
-
-    /// Determine whether a line is available to scan into video.
-    ///
-    /// If a video render is to be scheduled this scanline, return the
-    /// scanline number and a boolean indicating whether the line buffer
-    /// is available.
-    ///
-    /// If no video render is to be scheduled, the scanline number is
-    /// `!0`.
-    ///
-    /// This method also updates the `available` table internally.
-    #[link_section = ".data"]
-    fn line_available(&mut self) -> (u32, bool) {
-        if let Some(y) = self
-            .timing_state
-            .v_scanline_index(&self.timing, VIDEO_PIPELINE_SLACK)
-        {
-            if y % VERTICAL_REPEAT as u32 == 0 {
-                let y = y / VERTICAL_REPEAT as u32;
-                let available = self.scan_render.is_line_available(y);
-                let buf_ix = y as usize % N_VIDEO_BUFFERS;
-                self.available[buf_ix] = available;
-                return (y, available);
-            }
-        }
-        (!0, false)
-    }
-
-    /// Render a scanline into a video buffer.
-    ///
-    /// This function is called even if the corresponding line buffer is not
-    /// available, so the display list can be advanced.
-    #[link_section = ".data"]
-    fn render_video_line(&mut self, y: u32, available: bool) {
-        let buf_ix = y as usize % N_VIDEO_BUFFERS;
-        let video_slice = &mut self.vactive_lines[buf_ix][ACTIVE_SYNC_WORDS..];
-        self.scan_render.render_scanline(video_slice, y, available);
-    }
-
-    /// Schedule rendering of a line
-    #[link_section = ".data"]
-    fn schedule_line_render(&mut self) {
-        let offset = VIDEO_PIPELINE_SLACK + (N_LINE_BUFS * VERTICAL_REPEAT) as u32;
-        if let Some(y) = self.timing_state.v_scanline_index(&self.timing, offset) {
-            if y % VERTICAL_REPEAT as u32 == 0 {
-                let y_line = y / VERTICAL_REPEAT as u32;
-                self.scan_render.schedule_line_render(y_line);
-            }
         }
     }
 }
 
 #[link_section = ".data"]
 pub fn core1_main() -> ! {
+    let mut scan_render = ScanRender::new();
     unsafe {
         NVIC::unmask(Interrupt::DMA_IRQ_0);
     }
     loop {
         let (y, mut guard) = DVI_OUT.get_line();
         let line = guard.buf_mut();
-        for i in 0..8 {
-            line[i] = y;
-        }
+        scan_render.render_scanline(line, y);
     }
 }
 
@@ -483,7 +393,7 @@ fn DMA_IRQ_0() {
             dma.intr().write(|w| w.bits(1 << ch_num));
             ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
             ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
-            let offset = VIDEO_PIPELINE_SLACK + ((N_LINE_BUFS - 1) * VERTICAL_REPEAT) as u32;
+            let offset = VIDEO_PIPELINE_SLACK + ((N_VIDEO_BUFFERS - 1) * VERTICAL_REPEAT) as u32;
             if let Some(y) = inst.timing_state.v_scanline_index(&inst.timing, offset) {
                 if y as usize % VERTICAL_REPEAT == 0 {
                     let y_scaled = y / VERTICAL_REPEAT as u32;
