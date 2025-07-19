@@ -1,10 +1,11 @@
 use alloc::format;
-use embedded_hal::digital::v2::ToggleableOutputPin;
-use rp_pico::hal::gpio::{FunctionSioOutput, Pin, PinId, PullDown};
+use embedded_hal::digital::StatefulOutputPin;
 
 use crate::{
     dvi::VERTICAL_REPEAT,
-    render::{end_display_list, rgb, start_display_list, BW_PALETTE, FONT_HEIGHT, GLOBAL_PALETTE},
+    hal::gpio::{FunctionSioOutput, Pin, PinId, PullDown},
+    render::{end_display_list, rgb, start_display_list, BW_PALETTE_1BPP, FONT_HEIGHT},
+    PALETTE_4BPP,
 };
 
 use self::conway::GameOfLife;
@@ -73,7 +74,7 @@ fn colorbars<P: PinId>(counter: &Counter<P>) {
     let width = width + width % 2;
     rb.end_stripe();
     sb.begin_stripe(FONT_HEIGHT);
-    sb.pal_1bpp(width, &BW_PALETTE);
+    sb.pal_1bpp(width, &BW_PALETTE_1BPP);
     sb.solid(640 - width, rgb(0, 0, 0));
     sb.end_stripe();
     end_display_list(rb, sb);
@@ -112,7 +113,7 @@ fn tiles<P: PinId>(counter: &Counter<P>) {
     }
     sb.begin_stripe(tiled_height);
     unsafe {
-        sb.pal_4bpp(640, &GLOBAL_PALETTE);
+        sb.pal_4bpp(640, &PALETTE_4BPP);
     }
     sb.end_stripe();
     rb.begin_stripe(FONT_HEIGHT);
@@ -121,7 +122,7 @@ fn tiles<P: PinId>(counter: &Counter<P>) {
     let width = width + width % 2;
     rb.end_stripe();
     sb.begin_stripe(FONT_HEIGHT);
-    sb.pal_1bpp(width, &BW_PALETTE);
+    sb.pal_1bpp(width, &BW_PALETTE_1BPP);
     sb.solid(640 - width, rgb(0, 0, 0));
     sb.end_stripe();
     end_display_list(rb, sb);

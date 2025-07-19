@@ -256,3 +256,239 @@ tmds_scan_4bpp_pal:
     pop {r0, r3} // restore scratch registers
     ldmia r0!, {r4, r5, r6} // load function ptr and 2 args for next op
     bx r4 // jump to code for op
+
+///
+
+// This entry point is put in .data so it doesn't generate a thunk.
+.section .data
+
+.global video_scan
+.type video_scan,%function
+.thumb_func
+// r0: scan list in direct threaded format
+// r1: input buffer
+// r2: output buffer
+video_scan:
+    push {r4, r5, r6, r7}
+    mov r4, r8
+    mov r5, r9
+    mov r6, r10
+    push {r4, r5, r6}
+
+    // operation, 2x args
+    // should count be single pixels or double?
+    ldmia r0!, {r4, r5, r6}
+    bx r4
+
+// Hot loops are in .scratch_x to reduce RAM contention.
+.section .scratch_x
+
+.global video_scan_stop
+.type video_scan_stop,%function
+.thumb_func
+video_scan_stop:
+    subs r0, #8
+    pop {r4, r5, r6}
+    mov r8, r4
+    mov r9, r5
+    mov r10, r6
+    pop {r4, r5, r6, r7}
+    bx lr
+
+// args: count rgb (16 bpp)
+.global video_scan_solid_16
+.type video_scan_solid_16,%function
+.thumb_func
+video_scan_solid_16:
+    tst r2, #2
+    itt ne
+    subne r5, #1
+    strhne r6, [r2]!
+    // Should this be done by caller?
+    orr r6, r6, r6, lsl #16
+    subs r5, #4
+    mov r7, r6
+    blo 3f
+2:
+    subs r5, #4
+    stmia r2!, {r6, r7}
+    bhs 2b
+3:
+    adds r5, #2
+    it hs
+    stmiahs r2!, {r6}
+    tst r5, #1
+    it ne
+    strhne r6, [r2]!
+    ldmia r0!, {r4, r5, r6}
+    bx r4
+
+.macro video_scan_1bpp_pal_16_2bits lsb0 lsb1
+    ubfx r3, r4, \lsb0, #2
+    ubfx r7, r4, \lsb1, #2
+    ldr r3, [r6, r3, lsl #2]
+    ldr r7, [r6, r7, lsl #2]
+    stmia r2!, {r3, r7}
+.endm
+
+// args: count pal
+.global video_scan_1bpp_pal_16
+.type video_scan_1bpp_pal_16,%function
+.thumb_func
+video_scan_1bpp_pal_16:
+    tst r2, #2
+    bne 6f
+    subs r5, #32
+    blo 3f
+2:
+    ldmia r1!, {r4}
+    subs r5, #32
+    video_scan_1bpp_pal_16_2bits #0 #2
+    video_scan_1bpp_pal_16_2bits #4 #6
+    video_scan_1bpp_pal_16_2bits #8 #10
+    video_scan_1bpp_pal_16_2bits #12 #14
+    video_scan_1bpp_pal_16_2bits #16 #18
+    video_scan_1bpp_pal_16_2bits #20 #22
+    video_scan_1bpp_pal_16_2bits #24 #26
+    video_scan_1bpp_pal_16_2bits #28 #30
+    bhs 2b
+3:
+    adds r5, #32 // r5 = count % 32
+    beq 5f
+    ldmia r1!, {r4}
+4:
+    subs r5, #2
+    ubfx r3, r4, #0, #2
+    lsr r4, #2
+    ldr r3, [r6, r3, lsl #2]
+    stmia r2!, {r3}
+    bhi 4b
+    it ne
+    subne r2, #2
+5:
+    ldmia r0!, {r4, r5, r6}
+    bx r4
+6:
+    // r2 is aligned to odd pixel
+    subs r5, #32
+    blo 8f
+7:
+    ldmia r1!, {r4}
+    subs r5, #32
+    ubfx r3, r4, #0, #1
+    ldr r3, [r6, r3, lsl #2]
+    strh r3, [r2]!
+    video_scan_1bpp_pal_16_2bits #1 #3
+    video_scan_1bpp_pal_16_2bits #5 #7
+    video_scan_1bpp_pal_16_2bits #9 #11
+    video_scan_1bpp_pal_16_2bits #13 #15
+    video_scan_1bpp_pal_16_2bits #17 #19
+    video_scan_1bpp_pal_16_2bits #21 #23
+    video_scan_1bpp_pal_16_2bits #25 #27
+    ubfx r3, r4, #29, #2
+    ldr r3, [r6, r3, lsl #2]
+    stmia r2!, {r3}
+    ubfx r3, r4, #31, #1
+    ldr r3, [r6, r3, lsl #2]
+    strh r3, [r2]!
+    bhs 7b
+8:
+    adds r5, #32 // r5 = count % 32
+    beq 13f
+    ldmia r1!, {r4}
+    subs r5, #2
+    ubfx r3, r4, #0, #1
+    ldr r3, [r6, r3, lsl #2]
+    strh r3, [r2]!
+    bls 12f
+9:
+    subs r5, #2
+    ubfx r3, r4, #1, #2
+    lsr r4, #2
+    ldr r3, [r6, r3, lsl #2]
+    stmia r2!, {r3}
+    bhi 9b
+12:
+    blo 13f
+    ubfx r3, r4, #1, #1
+    ldr r3, [r6, r3, lsl #2]
+    strh r3, [r2]!
+13:
+    ldmia r0!, {r4, r5, r6}
+    bx r4
+
+// args: count pal
+// palette has 256 4 byte entries, each two pixels
+// currently restricted to even
+.global video_scan_4bpp_pal_16
+.type video_scan_4bpp_pal_16,%function
+.thumb_func
+video_scan_4bpp_pal_16:
+    subs r5, #8
+    blo 3f
+2:
+    ldmia r1!, {r4}
+    subs r5, #8
+    uxtb r3, r4
+    ubfx r7, r4, #8, #8
+    ldr r3, [r6, r3, lsl #2]
+    ldr r7, [r6, r7, lsl #2]
+    stmia r2!, {r3, r7}
+    ubfx r3, r4, #16, #8
+    ubfx r7, r4, #24, #8
+    ldr r3, [r6, r3, lsl #2]
+    ldr r7, [r6, r7, lsl #2]
+    stmia r2!, {r3, r7}
+    bhs 2b
+3:
+    adds r5, #8 // r5 = count % 8
+    ldmia r0!, {r4}
+    beq 5f
+    ldmia r1!, {r7}
+    subs r5, #2
+    uxtb r3, r7
+    ldr r3, [r6, r3, lsl #2]
+    stmia r2!, {r3}
+    bls 4f
+    ubfx r3, r7, #8, #8
+    ldr r3, [r6, r3, lsl #2]
+    subs r5, #2
+    stmia r2!, {r3}
+    bls 4f
+    ubfx r3, r7, #16, #8
+    ldr r3, [r6, r3, lsl #2]
+    subs r5, #2
+    stmia r2!, {r3}
+    bls 4f
+    // count % 8 == 7
+    ubfx r3, r7, #24, #8
+    ldrh r3, [r6, r3, lsl #2]
+    strh r3, [r2]!
+    ldmia r0!, {r5, r6}
+    bx r4
+    .align
+4:
+    it ne
+    subne r2, #2
+5:
+    ldmia r0!, {r5, r6}
+    bx r4
+
+// TODO finish
+.global sprite_4bpp
+.type sprite_4bpp,%function
+.thumb_func
+sprite_4bpp:
+    ldmia r1!, {r4}
+    ubfx r3, r4, #0, #4
+    lsls r3, r3, #1
+    itt ne
+    ldrhne r3, [r6, r3]
+    strhne r3, [r2]
+    // 6 elided
+    ubfx r3, r4, #28, #4
+    lsls r3, r3, #1
+    itt ne
+    ldrhne r3, [r6, r3]
+    strhne r3, [r2, #14]
+    bx lr

@@ -1,15 +1,15 @@
 use core::ops::Range;
 
+use crate::{
+    hal::gpio::PinId,
+    render::{Palette1bpp, BW_PALETTE_1BPP},
+};
 use alloc::format;
-use rp_pico::hal::gpio::PinId;
 
 use super::Counter;
 use crate::{
     dvi::VERTICAL_REPEAT,
-    render::{
-        end_display_list, quantized_1bpp_palette, rgb, start_display_list, xrgb, PaletteEntry,
-        BW_PALETTE, FONT_HEIGHT,
-    },
+    render::{end_display_list, rgb, start_display_list, xrgb, FONT_HEIGHT},
 };
 
 // Sadly these can not be generic on GameOfLife struct due to limitations with const-generics
@@ -263,10 +263,10 @@ const ALIVE: u32 = 0x00ffff;
 const DEAD: u32 = 0x303030;
 
 #[link_section = ".scratch_x"]
-pub static CONWAY_TEXT_PALETTE: [PaletteEntry; 4] = quantized_1bpp_palette(BACKGROUND, TEXT);
+pub static CONWAY_TEXT_PALETTE: Palette1bpp = Palette1bpp::new_rgb(BACKGROUND, TEXT);
 
 #[link_section = ".scratch_x"]
-pub static CONWAY_PALETTE: [PaletteEntry; 4] = quantized_1bpp_palette(DEAD, ALIVE);
+pub static CONWAY_PALETTE: Palette1bpp = Palette1bpp::new_rgb(DEAD, ALIVE);
 
 impl GameOfLife {
     pub(super) fn render<P: PinId>(&self, counter: &Counter<P>) {
@@ -324,7 +324,7 @@ impl GameOfLife {
             let text_width = text_width + text_width % 2;
             rb.end_stripe();
             sb.begin_stripe(FONT_HEIGHT);
-            sb.pal_1bpp(text_width, &BW_PALETTE);
+            sb.pal_1bpp(text_width, &BW_PALETTE_1BPP);
             sb.solid(width - text_width, rgb(0x00, 0x00, 0x00));
             sb.end_stripe();
         }

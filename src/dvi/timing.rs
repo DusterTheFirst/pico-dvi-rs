@@ -2,36 +2,32 @@
 //! <https://github.com/Wren6991/PicoDVI/blob/51237271437e9d1eb62c97e40171fbf6ffe01ac6/software/libdvi/dvi_timing.c>
 
 use fugit::KilohertzU32;
-use rp_pico::hal::dma::SingleChannel;
 
-use super::{
-    dma::{DmaChannelList, DmaChannels, DmaControlBlock, DviLaneDmaCfg},
-    tmds::{TmdsPair, TmdsSymbol},
-};
+use super::{hstx_cmd_raw, hstx_cmd_raw_repeat};
 
 // Perhaps there should be a trait with associated constants for resolution,
 // to allow compile-time allocation of scanline buffers etc.
 pub struct DviTiming {
-    h_sync_polarity: bool,
-    h_front_porch: u32,
-    h_sync_width: u32,
-    h_back_porch: u32,
-    h_active_pixels: u32,
+    pub h_sync_polarity: bool,
+    pub h_front_porch: u32,
+    pub h_sync_width: u32,
+    pub h_back_porch: u32,
+    pub h_active_pixels: u32,
 
-    v_sync_polarity: bool,
-    v_front_porch: u32,
-    v_sync_width: u32,
-    v_back_porch: u32,
-    v_active_lines: u32,
+    pub v_sync_polarity: bool,
+    pub v_front_porch: u32,
+    pub v_sync_width: u32,
+    pub v_back_porch: u32,
+    pub v_active_lines: u32,
 
     pub bit_clk: KilohertzU32,
 }
 
-impl DviTiming {
-    pub fn horizontal_words(&self) -> u32 {
-        self.h_active_pixels / 2
-    }
+// Number of trailing sync words to encode as raw
+const SYNC_TRAILING_RAW: usize = 8;
+pub const SYNC_LINE_WORDS: usize = 7 + SYNC_TRAILING_RAW;
 
+impl DviTiming {
     fn total_lines(&self) -> u32 {
         self.v_front_porch + self.v_sync_width + self.v_back_porch + self.v_active_lines
     }
@@ -52,6 +48,31 @@ impl DviTiming {
             DviTimingLineState::Active
         }
     }
+
+    pub fn tmds3_for_sync(&self, h_sync: bool, v_sync: bool) -> u32 {
+        const TMDS_CTRL: [u32; 4] = [0x354, 0xab, 0x154, 0x2ab];
+        let h_bit = (h_sync == self.h_sync_polarity) as usize;
+        let v_bit = (v_sync == self.v_sync_polarity) as usize;
+        let tmds_lane_0 = TMDS_CTRL[h_bit + (v_bit << 1)];
+        let tmds_lane_1 = TMDS_CTRL[0];
+        let tmds_lane_2 = TMDS_CTRL[0];
+        tmds_lane_0 | (tmds_lane_1 << 10) | (tmds_lane_2 << 20)
+    }
+
+    pub fn make_sync_line(&self, v_sync: bool) -> [u32; SYNC_LINE_WORDS] {
+        let h_sync_off = self.tmds3_for_sync(false, v_sync);
+        let mut line = [h_sync_off; SYNC_LINE_WORDS];
+        line[0] = hstx_cmd_raw_repeat(self.h_front_porch);
+        // line[1] is already h_sync_off
+        line[2] = h_sync_off;
+        line[2] = hstx_cmd_raw_repeat(self.h_sync_width);
+        line[3] = self.tmds3_for_sync(true, v_sync);
+        const TAIL: u32 = SYNC_TRAILING_RAW as u32;
+        line[4] = hstx_cmd_raw_repeat(self.h_back_porch + self.h_active_pixels - TAIL);
+        // line[5] is already h_sync_off
+        line[6] = hstx_cmd_raw(TAIL);
+        line
+    }
 }
 
 pub const VGA_TIMING: DviTiming = DviTiming {
@@ -70,12 +91,15 @@ pub const VGA_TIMING: DviTiming = DviTiming {
     bit_clk: KilohertzU32::kHz(252000),
 };
 
-#[derive(Default)]
 pub struct DviTimingState {
     v_ctr: u32,
 }
 
 impl DviTimingState {
+    pub fn new(init_value: u32) -> Self {
+        DviTimingState { v_ctr: init_value }
+    }
+
     pub fn advance(&mut self, timing: &DviTiming) {
         self.v_ctr += 1;
         if self.v_ctr == timing.total_lines() {
@@ -106,131 +130,3 @@ pub enum DviTimingLineState {
     BackPorch,
     Active,
 }
-
-const DVI_SYNC_LANE_CHUNKS: usize = 4;
-const DVI_LANE_CHUNKS: usize = 2;
-
-#[derive(Default)]
-pub struct DviScanlineDmaList {
-    lane0: [DmaControlBlock; DVI_SYNC_LANE_CHUNKS],
-    lane1: [DmaControlBlock; DVI_LANE_CHUNKS],
-    lane2: [DmaControlBlock; DVI_LANE_CHUNKS],
-}
-
-impl DviScanlineDmaList {
-    pub fn lane(&self, i: usize) -> &[DmaControlBlock] {
-        match i {
-            0 => &self.lane0,
-            1 => &self.lane1,
-            _ => &self.lane2,
-        }
-    }
-
-    fn lane_mut(&mut self, i: usize) -> &mut [DmaControlBlock] {
-        match i {
-            0 => &mut self.lane0,
-            1 => &mut self.lane1,
-            _ => &mut self.lane2,
-        }
-    }
-
-    fn setup_lane_0<Ch0, Ch1>(
-        &mut self,
-        timing: &DviTiming,
-        dma_cfg: &DviLaneDmaCfg<Ch0, Ch1>,
-        line_state: DviTimingLineState,
-        has_data: bool,
-    ) where
-        Ch0: SingleChannel,
-        Ch1: SingleChannel,
-    {
-        let vsync = (line_state == DviTimingLineState::Sync) == timing.v_sync_polarity;
-        let symbol_hsync_off = get_ctrl_symbol(vsync, !timing.h_sync_polarity);
-        let symbol_hsync_on = get_ctrl_symbol(vsync, timing.h_sync_polarity);
-        let lane = &mut self.lane0;
-        lane[0].set(
-            symbol_hsync_off,
-            dma_cfg,
-            timing.h_front_porch / 2,
-            2,
-            false,
-        );
-        lane[1].set(symbol_hsync_on, dma_cfg, timing.h_sync_width / 2, 2, false);
-        lane[2].set(symbol_hsync_off, dma_cfg, timing.h_back_porch / 2, 2, true);
-        let read_ring = if has_data { 0 } else { 2 };
-        let symbol = match line_state {
-            DviTimingLineState::Active => &EMPTY_SCANLINE_TMDS[0],
-            _ => symbol_hsync_off,
-        };
-        lane[3].set(
-            symbol,
-            dma_cfg,
-            timing.h_active_pixels / 2,
-            read_ring,
-            false,
-        );
-    }
-
-    fn setup_lane_12<Ch0, Ch1>(
-        &mut self,
-        lane_number: usize,
-        timing: &DviTiming,
-        dma_cfg: &DviLaneDmaCfg<Ch0, Ch1>,
-        line_state: DviTimingLineState,
-        has_data: bool,
-    ) where
-        Ch0: SingleChannel,
-        Ch1: SingleChannel,
-    {
-        let symbol_no_sync = get_ctrl_symbol(false, false);
-
-        let lane = self.lane_mut(lane_number);
-        let inactive = timing.h_front_porch + timing.h_sync_width + timing.h_back_porch;
-        lane[0].set(symbol_no_sync, dma_cfg, inactive / 2, 2, false);
-        let read_ring = if has_data { 0 } else { 2 };
-        let sym = match line_state {
-            DviTimingLineState::Active => &EMPTY_SCANLINE_TMDS[lane_number],
-            _ => symbol_no_sync,
-        };
-        lane[1].set(sym, dma_cfg, timing.h_active_pixels / 2, read_ring, false);
-    }
-
-    pub fn setup_scanline<Channels: DmaChannelList>(
-        &mut self,
-        timing: &DviTiming,
-        channels: &DmaChannels<Channels>,
-        line_state: DviTimingLineState,
-        has_data: bool,
-    ) {
-        self.setup_lane_0(timing, &channels.lane0, line_state, has_data);
-        self.setup_lane_12(1, timing, &channels.lane1, line_state, has_data);
-        self.setup_lane_12(2, timing, &channels.lane2, line_state, has_data);
-    }
-
-    pub fn update_scanline(&mut self, buf: *const TmdsPair, stride: u32) {
-        unsafe {
-            self.lane0[3].update_buf(buf);
-            self.lane1[1].update_buf(buf.add(stride as usize));
-            self.lane2[1].update_buf(buf.add(stride as usize * 2));
-        }
-    }
-}
-
-#[link_section = ".data"]
-static DVI_CTRL_SYMBOLS: [TmdsPair; 4] = [
-    TmdsPair::double(TmdsSymbol::C0),
-    TmdsPair::double(TmdsSymbol::C1),
-    TmdsPair::double(TmdsSymbol::C2),
-    TmdsPair::double(TmdsSymbol::C3),
-];
-
-fn get_ctrl_symbol(vsync: bool, hsync: bool) -> &'static TmdsPair {
-    &DVI_CTRL_SYMBOLS[((vsync as usize) << 1) | (hsync as usize)]
-}
-
-#[link_section = ".data"]
-static EMPTY_SCANLINE_TMDS: [TmdsPair; 3] = [
-    TmdsPair::encode_balanced_approx(0x00), // Blue
-    TmdsPair::encode_balanced_approx(0x00), // Green
-    TmdsPair::encode_balanced_approx(0xff), // Red
-];
