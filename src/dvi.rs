@@ -1,3 +1,4 @@
+pub mod pinout;
 pub mod timing;
 
 use alloc::boxed::Box;
@@ -11,7 +12,6 @@ use core::{
 };
 
 use crate::{
-    dvi::timing::SYNC_LINE_ONLY_WORDS,
     hal::pac::{
         interrupt, Interrupt, Peripherals, DMA, HSTX_CTRL, HSTX_FIFO, IO_BANK0, PADS_BANK0,
     },
@@ -19,7 +19,10 @@ use crate::{
     DVI_OUT,
 };
 use cortex_m::peripheral::NVIC;
-use timing::{DviTiming, DviTimingLineState, DviTimingState, SYNC_LINE_WORDS};
+use pinout::DviPinout;
+use timing::{
+    DviTiming, DviTimingLineState, DviTimingState, SYNC_LINE_ONLY_WORDS, SYNC_LINE_WORDS,
+};
 
 use crate::DVI_INST;
 
@@ -133,7 +136,7 @@ const fn hstx_cmd_nop() -> u32 {
 }
 
 #[inline(never)]
-pub unsafe fn setup_hstx(hstx: &HSTX_CTRL) {
+pub unsafe fn setup_hstx(hstx: &HSTX_CTRL, pinout: DviPinout) {
     unsafe {
         match BPP {
             16 => {
@@ -188,7 +191,6 @@ pub unsafe fn setup_hstx(hstx: &HSTX_CTRL) {
             }
             _ => panic!("unsupported pixel depth"),
         }
-        // default expand_shift is fine for non-doubled 888
         hstx.csr().write(|w| {
             w.expand_en()
                 .set_bit()
@@ -201,42 +203,14 @@ pub unsafe fn setup_hstx(hstx: &HSTX_CTRL) {
                 .en()
                 .set_bit()
         });
-        hstx.bit2().write(|w| w.clk().set_bit());
-        hstx.bit3().write(|w| w.clk().set_bit().inv().set_bit());
-        // Lane assignments for Adafruit feather board
-        const PERM: [u8; 3] = [2, 1, 0];
-        // Lane assignments for Olimex RP2350pc
-        //const PERM: [u8; 3] = [0, 2, 1];
-        hstx.bit0()
-            .write(|w| w.sel_p().bits(PERM[0] * 10).sel_n().bits(PERM[0] * 10 + 1));
-        hstx.bit1().write(|w| {
-            w.sel_p()
-                .bits(PERM[0] * 10)
-                .sel_n()
-                .bits(PERM[0] * 10 + 1)
-                .inv()
-                .set_bit()
-        });
-        hstx.bit4()
-            .write(|w| w.sel_p().bits(PERM[1] * 10).sel_n().bits(PERM[1] * 10 + 1));
-        hstx.bit5().write(|w| {
-            w.sel_p()
-                .bits(PERM[1] * 10)
-                .sel_n()
-                .bits(PERM[1] * 10 + 1)
-                .inv()
-                .set_bit()
-        });
-        hstx.bit6()
-            .write(|w| w.sel_p().bits(PERM[2] * 10).sel_n().bits(PERM[2] * 10 + 1));
-        hstx.bit7().write(|w| {
-            w.sel_p()
-                .bits(PERM[2] * 10)
-                .sel_n()
-                .bits(PERM[2] * 10 + 1)
-                .inv()
-                .set_bit()
-        });
+        hstx.bit0().write(|w| w.bits(pinout.cfg_bits(0)));
+        hstx.bit1().write(|w| w.bits(pinout.cfg_bits(1)));
+        hstx.bit2().write(|w| w.bits(pinout.cfg_bits(2)));
+        hstx.bit3().write(|w| w.bits(pinout.cfg_bits(3)));
+        hstx.bit4().write(|w| w.bits(pinout.cfg_bits(4)));
+        hstx.bit5().write(|w| w.bits(pinout.cfg_bits(5)));
+        hstx.bit6().write(|w| w.bits(pinout.cfg_bits(6)));
+        hstx.bit7().write(|w| w.bits(pinout.cfg_bits(7)));
     }
 }
 

@@ -23,7 +23,11 @@ use rp235x_hal as hal;
 
 use crate::{
     clock::init_clocks,
-    dvi::{timing::VGA_TIMING, DviInst, DviOut},
+    dvi::{
+        pinout::{DviPinout, DviPolarity},
+        timing::VGA_TIMING,
+        DviInst, DviOut,
+    },
 };
 
 mod clock;
@@ -146,7 +150,12 @@ fn entry() -> ! {
         let periphs = hal::pac::Peripherals::steal();
         periphs.RESETS.reset().modify(|_, w| w.hstx().clear_bit());
         while periphs.RESETS.reset_done().read().hstx().bit_is_clear() {}
-        dvi::setup_hstx(&periphs.HSTX_CTRL);
+        use dvi::pinout::DviPair::*;
+        // Pinout for Adafruit Feather RP2350
+        let pinout = DviPinout::new([D2, Clk, D1, D0], DviPolarity::Pos);
+        // Pinout for Olimex RP2350pc
+        //let pinout = DviPinout::new([D0, Clk, D2, D1], DviPolarity::Pos);
+        dvi::setup_hstx(&periphs.HSTX_CTRL, pinout);
         dvi::setup_dma(&periphs.DMA, &periphs.HSTX_FIFO);
         periphs
             .BUSCTRL
@@ -162,7 +171,7 @@ fn entry() -> ! {
         let cores = mc.cores();
         let core1 = &mut cores[1];
         core1
-            .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || core1_main())
+            .spawn(CORE1_STACK.take().unwrap(), move || core1_main())
             .unwrap();
         // TODO: since we now have the dvi interrupt running on core 0, to spill
         // rendering tasks we'd need to get this spawned on core 1 also. The best
