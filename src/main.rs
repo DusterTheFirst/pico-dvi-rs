@@ -15,7 +15,6 @@ use hal::{
     dma::DMAExt,
     gpio::PinState,
     multicore::{Multicore, Stack},
-    pac::Interrupt,
     sio::Sio,
     watchdog::Watchdog,
 };
@@ -71,7 +70,7 @@ static DVI_INST: DviInstWrapper = DviInstWrapper(UnsafeCell::new(MaybeUninit::un
 
 static DVI_OUT: DviOut = DviOut::new();
 
-static mut CORE1_STACK: Stack<65536> = Stack::new();
+static mut CORE1_STACK: Stack<1024> = Stack::new();
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
 #[hal::entry]
@@ -154,35 +153,33 @@ fn entry() -> ! {
             .bus_priority()
             .write(|w| w.dma_r().set_bit().dma_w().set_bit());
         dvi::setup_pins(&periphs.PADS_BANK0, &periphs.IO_BANK0);
-        cortex_m::peripheral::NVIC::unmask(Interrupt::DMA_IRQ_0);
+        //cortex_m::peripheral::NVIC::unmask(Interrupt::DMA_IRQ_0);
+
+        init_display_swapcell(width);
+
+        let mut fifo = single_cycle_io.fifo;
+        let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
+        let cores = mc.cores();
+        let core1 = &mut cores[1];
+        core1
+            .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || core1_main())
+            .unwrap();
+        // TODO: since we now have the dvi interrupt running on core 0, to spill
+        // rendering tasks we'd need to get this spawned on core 1 also. The best
+        // thing would be to figure out why running dvi on core 1 doesn't work, but
+        // in any case it should probably be rethought some.
+        /*
+        // Safety: enable interrupt for fifo to receive line render requests.
+        // Transfer ownership of this end of the fifo to the interrupt handler.
+        unsafe {
+            FIFO = MaybeUninit::new(fifo);
+            NVIC::unmask(Interrupt::SIO_IRQ_FIFO);
+        }
+        */
         dvi::start_dma(&periphs.DMA);
     }
 
-    init_display_swapcell(width);
-
-    let mut fifo = single_cycle_io.fifo;
-    let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
-    let cores = mc.cores();
-    let core1 = &mut cores[1];
-    core1
-        .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || {
-            demo::demo(led_pin)
-        })
-        .unwrap();
-    // TODO: since we now have the dvi interrupt running on core 0, to spill
-    // rendering tasks we'd need to get this spawned on core 1 also. The best
-    // thing would be to figure out why running dvi on core 1 doesn't work, but
-    // in any case it should probably be rethought some.
-    /*
-    // Safety: enable interrupt for fifo to receive line render requests.
-    // Transfer ownership of this end of the fifo to the interrupt handler.
-    unsafe {
-        FIFO = MaybeUninit::new(fifo);
-        NVIC::unmask(Interrupt::SIO_IRQ_FIFO);
-    }
-    */
-
-    core1_main();
+    demo::demo(led_pin);
 }
 
 fn sysinfo(sysinfo: &hal::pac::SYSINFO) {

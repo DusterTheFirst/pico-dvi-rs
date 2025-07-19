@@ -10,9 +10,7 @@ pub use palette::{Palette1bpp, Palette4bppFast, BW_PALETTE_1BPP};
 
 pub use queue::Queue;
 
-use crate::{
-    dvi::BPP,
-};
+use crate::dvi::BPP;
 
 use crate::{
     dvi::VERTICAL_REPEAT,
