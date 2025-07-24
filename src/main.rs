@@ -138,13 +138,14 @@ fn entry() -> ! {
 
     // LED is pin 7 on Feather 2350 board. We don't have board crates yet for Pico 2
     let led_pin = pins.gpio7.into_push_pull_output_in_state(PinState::Low);
+    let gpio_pin = pins.gpio10.into_push_pull_output_in_state(PinState::Low);
 
     let _dma = peripherals.DMA.split(&mut peripherals.RESETS);
 
     let width = timing.h_active_pixels;
 
     unsafe {
-        (*DVI_INST.0.get()).write(DviInst::new(timing));
+        (*DVI_INST.0.get()).write(DviInst::new(timing, gpio_pin));
         // Maybe do more safety theater here. The problem is that pins can't
         // set the HSTX function.
         let periphs = hal::pac::Peripherals::steal();
@@ -162,31 +163,17 @@ fn entry() -> ! {
             .bus_priority()
             .write(|w| w.dma_r().set_bit().dma_w().set_bit());
         dvi::setup_pins(&periphs.PADS_BANK0, &periphs.IO_BANK0);
-        //cortex_m::peripheral::NVIC::unmask(Interrupt::DMA_IRQ_0);
-
-        init_display_swapcell(width);
-
-        let mut fifo = single_cycle_io.fifo;
-        let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
-        let cores = mc.cores();
-        let core1 = &mut cores[1];
-        core1
-            .spawn(CORE1_STACK.take().unwrap(), move || core1_main())
-            .unwrap();
-        // TODO: since we now have the dvi interrupt running on core 0, to spill
-        // rendering tasks we'd need to get this spawned on core 1 also. The best
-        // thing would be to figure out why running dvi on core 1 doesn't work, but
-        // in any case it should probably be rethought some.
-        /*
-        // Safety: enable interrupt for fifo to receive line render requests.
-        // Transfer ownership of this end of the fifo to the interrupt handler.
-        unsafe {
-            FIFO = MaybeUninit::new(fifo);
-            NVIC::unmask(Interrupt::SIO_IRQ_FIFO);
-        }
-        */
-        dvi::start_dma(&periphs.DMA);
     }
+
+    init_display_swapcell(width);
+
+    let mut fifo = single_cycle_io.fifo;
+    let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
+    let cores = mc.cores();
+    let core1 = &mut cores[1];
+    core1
+        .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || core1_main())
+        .unwrap();
 
     demo::demo(led_pin);
 }
