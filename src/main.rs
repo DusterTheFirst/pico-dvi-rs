@@ -15,16 +15,19 @@ use hal::{
     dma::DMAExt,
     gpio::PinState,
     multicore::{Multicore, Stack},
-    pac::{interrupt, Interrupt},
-    sio::{Sio, SioFifo},
+    sio::Sio,
     watchdog::Watchdog,
 };
-use render::{init_display_swapcell, render_line, Palette4bppFast};
+use render::{init_display_swapcell, Palette4bppFast};
 use rp235x_hal as hal;
 
 use crate::{
     clock::init_clocks,
-    dvi::{timing::VGA_TIMING, DviInst},
+    dvi::{
+        pinout::{DviPinout, DviPolarity},
+        timing::VGA_TIMING,
+        DviInst, DviOut,
+    },
 };
 
 mod clock;
@@ -53,6 +56,9 @@ global_asm! {
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
+// Perhaps there should be one struct with all this state, and
+// multiple MaybeUninit fields.
+
 struct DviInstWrapper(UnsafeCell<MaybeUninit<DviInst>>);
 
 // Safety: access to the instance is indeed shared across threads,
@@ -66,9 +72,9 @@ unsafe impl Sync for DviInstWrapper {}
 
 static DVI_INST: DviInstWrapper = DviInstWrapper(UnsafeCell::new(MaybeUninit::uninit()));
 
-static mut CORE1_STACK: Stack<65536> = Stack::new();
+static DVI_OUT: DviOut = DviOut::new();
 
-static mut FIFO: MaybeUninit<SioFifo> = MaybeUninit::uninit();
+static mut CORE1_STACK: Stack<1024> = Stack::new();
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
 #[hal::entry]
@@ -144,42 +150,45 @@ fn entry() -> ! {
         let periphs = hal::pac::Peripherals::steal();
         periphs.RESETS.reset().modify(|_, w| w.hstx().clear_bit());
         while periphs.RESETS.reset_done().read().hstx().bit_is_clear() {}
-        dvi::setup_hstx(&periphs.HSTX_CTRL);
+        use dvi::pinout::DviPair::*;
+        // Pinout for Adafruit Feather RP2350
+        let pinout = DviPinout::new([D2, Clk, D1, D0], DviPolarity::Pos);
+        // Pinout for Olimex RP2350pc
+        //let pinout = DviPinout::new([D0, Clk, D2, D1], DviPolarity::Pos);
+        dvi::setup_hstx(&periphs.HSTX_CTRL, pinout);
         dvi::setup_dma(&periphs.DMA, &periphs.HSTX_FIFO);
         periphs
             .BUSCTRL
             .bus_priority()
             .write(|w| w.dma_r().set_bit().dma_w().set_bit());
         dvi::setup_pins(&periphs.PADS_BANK0, &periphs.IO_BANK0);
-        cortex_m::peripheral::NVIC::unmask(Interrupt::DMA_IRQ_0);
+        //cortex_m::peripheral::NVIC::unmask(Interrupt::DMA_IRQ_0);
+
+        init_display_swapcell(width);
+
+        let mut fifo = single_cycle_io.fifo;
+        let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
+        let cores = mc.cores();
+        let core1 = &mut cores[1];
+        core1
+            .spawn(CORE1_STACK.take().unwrap(), move || core1_main())
+            .unwrap();
+        // TODO: since we now have the dvi interrupt running on core 0, to spill
+        // rendering tasks we'd need to get this spawned on core 1 also. The best
+        // thing would be to figure out why running dvi on core 1 doesn't work, but
+        // in any case it should probably be rethought some.
+        /*
+        // Safety: enable interrupt for fifo to receive line render requests.
+        // Transfer ownership of this end of the fifo to the interrupt handler.
+        unsafe {
+            FIFO = MaybeUninit::new(fifo);
+            NVIC::unmask(Interrupt::SIO_IRQ_FIFO);
+        }
+        */
         dvi::start_dma(&periphs.DMA);
     }
 
-    init_display_swapcell(width);
-
-    let mut fifo = single_cycle_io.fifo;
-    let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
-    let cores = mc.cores();
-    let core1 = &mut cores[1];
-    core1
-        .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || {
-            demo::demo(led_pin)
-        })
-        .unwrap();
-    // TODO: since we now have the dvi interrupt running on core 0, to spill
-    // rendering tasks we'd need to get this spawned on core 1 also. The best
-    // thing would be to figure out why running dvi on core 1 doesn't work, but
-    // in any case it should probably be rethought some.
-    /*
-    // Safety: enable interrupt for fifo to receive line render requests.
-    // Transfer ownership of this end of the fifo to the interrupt handler.
-    unsafe {
-        FIFO = MaybeUninit::new(fifo);
-        NVIC::unmask(Interrupt::SIO_IRQ_FIFO);
-    }
-    */
-
-    core1_main();
+    demo::demo(led_pin);
 }
 
 fn sysinfo(sysinfo: &hal::pac::SYSINFO) {
@@ -248,20 +257,6 @@ fn ram_y() {
         "ram_y fn is placed at {} which is not in SRAM5",
         ptr
     );
-}
-
-/// Called by the system only when core 1 is overloaded and can't handle all the rendering work, and requests core 0 to render one scan line worth of content.
-#[link_section = ".data"]
-#[interrupt]
-fn SIO_IRQ_FIFO() {
-    // Safety: this interrupt handler has exclusive access to this
-    // end of the fifo.
-    let fifo = unsafe { FIFO.assume_init_mut() };
-    while let Some(line_ix) = fifo.read() {
-        // Safety: exclusive access to the line buffer is granted
-        // when the render is scheduled to a core.
-        unsafe { render_line(line_ix) };
-    }
 }
 
 /// Program metadata for `picotool info`

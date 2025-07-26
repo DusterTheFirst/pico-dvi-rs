@@ -1,14 +1,28 @@
+pub mod pinout;
 pub mod timing;
+
+use alloc::boxed::Box;
+use core::{
+    cell::UnsafeCell,
+    mem::MaybeUninit,
+    sync::atomic::{
+        AtomicBool,
+        Ordering::{Acquire, Relaxed, Release},
+    },
+};
 
 use crate::{
     hal::pac::{
         interrupt, Interrupt, Peripherals, DMA, HSTX_CTRL, HSTX_FIFO, IO_BANK0, PADS_BANK0,
     },
-    render::{render_line, ScanRender, CORE1_QUEUE, N_LINE_BUFS},
+    render::{Queue, ScanRender},
+    DVI_OUT,
 };
-use alloc::boxed::Box;
 use cortex_m::peripheral::NVIC;
-use timing::{DviTiming, DviTimingLineState, DviTimingState, SYNC_LINE_WORDS};
+use pinout::DviPinout;
+use timing::{
+    DviTiming, DviTimingLineState, DviTimingState, SYNC_LINE_ONLY_WORDS, SYNC_LINE_WORDS,
+};
 
 use crate::DVI_INST;
 
@@ -33,16 +47,71 @@ const N_VIDEO_BUFFERS: usize = if VIDEO_PIPELINE_SLACK > 0 && VERTICAL_REPEAT ==
     2
 };
 
+pub struct DviOut {
+    line_queue: Queue<LINE_QUEUE_SIZE>,
+    line_lent: [AtomicBool; N_VIDEO_BUFFERS],
+    video_lines: [UnsafeCell<MaybeUninit<Box<[u32]>>>; N_VIDEO_BUFFERS],
+    // TODO: DviInst should go in here.
+}
+
 pub struct DviInst {
     timing: DviTiming,
     dma_pong: bool,
     timing_state: DviTimingState,
-    vblank_line_vsync_off: [u32; SYNC_LINE_WORDS],
-    vblank_line_vsync_on: [u32; SYNC_LINE_WORDS],
-    vactive_lines: [Box<[u32]>; N_VIDEO_BUFFERS],
-    available: [bool; N_VIDEO_BUFFERS],
-    scan_render: ScanRender,
+
+    // New state
+    sync_pulse_vsync_off: [u32; SYNC_LINE_WORDS],
+    sync_pulse_vsync_on: [u32; SYNC_LINE_WORDS],
+    sync_line_only_vsync_off: [u32; SYNC_LINE_ONLY_WORDS],
+    sync_line_only_vsync_on: [u32; SYNC_LINE_ONLY_WORDS],
+    err_line: [u32; SYNC_LINE_ONLY_WORDS],
+
+    missed: [bool; N_VIDEO_BUFFERS],
 }
+
+pub struct LineGuard<'a> {
+    dvi_out: &'a DviOut,
+    buf_ix: usize,
+}
+
+const LINE_QUEUE_SIZE: usize = (N_VIDEO_BUFFERS + 1).next_power_of_two();
+
+impl DviOut {
+    pub const fn new() -> Self {
+        Self {
+            line_queue: Queue::new(),
+            line_lent: [const { AtomicBool::new(false) }; N_VIDEO_BUFFERS],
+            video_lines: [const { UnsafeCell::new(MaybeUninit::uninit()) }; N_VIDEO_BUFFERS],
+        }
+    }
+
+    pub fn get_line(&self) -> (u32, LineGuard) {
+        let line_ix = self.line_queue.take_blocking();
+        let buf_ix = line_ix as usize % N_VIDEO_BUFFERS;
+        let guard = LineGuard {
+            dvi_out: self,
+            buf_ix,
+        };
+        (line_ix, guard)
+    }
+}
+
+impl Drop for LineGuard<'_> {
+    fn drop(&mut self) {
+        self.dvi_out.line_lent[self.buf_ix].store(false, Release);
+    }
+}
+
+impl LineGuard<'_> {
+    fn buf_mut(&mut self) -> &mut [u32] {
+        unsafe {
+            let line = (*self.dvi_out.video_lines[self.buf_ix].get()).assume_init_mut();
+            &mut line[1..]
+        }
+    }
+}
+
+unsafe impl Sync for DviOut {}
 
 const fn hstx_cmd_raw(len: u32) -> u32 {
     (0 << 12) | len
@@ -67,7 +136,7 @@ const fn hstx_cmd_nop() -> u32 {
 }
 
 #[inline(never)]
-pub unsafe fn setup_hstx(hstx: &HSTX_CTRL) {
+pub unsafe fn setup_hstx(hstx: &HSTX_CTRL, pinout: DviPinout) {
     unsafe {
         match BPP {
             16 => {
@@ -122,7 +191,6 @@ pub unsafe fn setup_hstx(hstx: &HSTX_CTRL) {
             }
             _ => panic!("unsupported pixel depth"),
         }
-        // default expand_shift is fine for non-doubled 888
         hstx.csr().write(|w| {
             w.expand_en()
                 .set_bit()
@@ -135,40 +203,14 @@ pub unsafe fn setup_hstx(hstx: &HSTX_CTRL) {
                 .en()
                 .set_bit()
         });
-        hstx.bit2().write(|w| w.clk().set_bit());
-        hstx.bit3().write(|w| w.clk().set_bit().inv().set_bit());
-        // Lane assignments for Adafruit feather board;
-        const PERM: [u8; 3] = [2, 1, 0];
-        hstx.bit0()
-            .write(|w| w.sel_p().bits(PERM[0] * 10).sel_n().bits(PERM[0] * 10 + 1));
-        hstx.bit1().write(|w| {
-            w.sel_p()
-                .bits(PERM[0] * 10)
-                .sel_n()
-                .bits(PERM[0] * 10 + 1)
-                .inv()
-                .set_bit()
-        });
-        hstx.bit4()
-            .write(|w| w.sel_p().bits(PERM[1] * 10).sel_n().bits(PERM[1] * 10 + 1));
-        hstx.bit5().write(|w| {
-            w.sel_p()
-                .bits(PERM[1] * 10)
-                .sel_n()
-                .bits(PERM[1] * 10 + 1)
-                .inv()
-                .set_bit()
-        });
-        hstx.bit6()
-            .write(|w| w.sel_p().bits(PERM[2] * 10).sel_n().bits(PERM[2] * 10 + 1));
-        hstx.bit7().write(|w| {
-            w.sel_p()
-                .bits(PERM[2] * 10)
-                .sel_n()
-                .bits(PERM[2] * 10 + 1)
-                .inv()
-                .set_bit()
-        });
+        hstx.bit0().write(|w| w.bits(pinout.cfg_bits(0)));
+        hstx.bit1().write(|w| w.bits(pinout.cfg_bits(1)));
+        hstx.bit2().write(|w| w.bits(pinout.cfg_bits(2)));
+        hstx.bit3().write(|w| w.bits(pinout.cfg_bits(3)));
+        hstx.bit4().write(|w| w.bits(pinout.cfg_bits(4)));
+        hstx.bit5().write(|w| w.bits(pinout.cfg_bits(5)));
+        hstx.bit6().write(|w| w.bits(pinout.cfg_bits(6)));
+        hstx.bit7().write(|w| w.bits(pinout.cfg_bits(7)));
     }
 }
 
@@ -179,13 +221,16 @@ pub unsafe fn setup_dma(dma: &DMA, hstx_fifo: &HSTX_FIFO) {
     let inst = (*DVI_INST.0.get()).assume_init_mut();
     unsafe {
         for i in 0..2 {
+            let cmds = if i == 0 {
+                &inst.sync_pulse_vsync_off[..]
+            } else {
+                &inst.sync_line_only_vsync_off[..]
+            };
             let ch = dma.ch(i);
-            ch.ch_read_addr()
-                .write(|w| w.bits(inst.vblank_line_vsync_off.as_ptr() as u32));
+            ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
             ch.ch_write_addr()
                 .write(|w| w.bits(hstx_fifo.fifo().as_ptr() as u32));
-            ch.ch_trans_count()
-                .write(|w| w.bits(inst.vblank_line_vsync_off.len() as u32));
+            ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
             ch.ch_al1_ctrl().write(|w| {
                 w.chain_to()
                     .bits((i ^ 1) as u8)
@@ -229,115 +274,54 @@ pub unsafe fn setup_pins(pads: &PADS_BANK0, io: &IO_BANK0) {
     }
 }
 
-// Number of TMDS expansion words prefacing video data in an active line.
-const ACTIVE_SYNC_WORDS: usize = 7;
-
 impl DviInst {
     pub fn new(timing: DviTiming) -> Self {
-        let vblank_line_vsync_off = timing.make_sync_line(false);
-        let vblank_line_vsync_on = timing.make_sync_line(true);
+        let sync_pulse_vsync_off = timing.make_sync_pulse(false);
+        let sync_pulse_vsync_on = timing.make_sync_pulse(true);
+        let sync_line_only_vsync_off = timing.make_sync_line_only(false);
+        let sync_line_only_vsync_on = timing.make_sync_line_only(true);
+        let mut err_line = [0x7c007c00; SYNC_LINE_ONLY_WORDS];
+        // TODO: correct logic for constants
+        const TAIL: u32 = 16;
+        err_line[0] = hstx_cmd_tmds_repeat(timing.h_active_pixels - TAIL);
+        err_line[2] = hstx_cmd_tmds(TAIL);
 
-        let vactive_size = ACTIVE_SYNC_WORDS + timing.h_active_pixels as usize * BPP / 32;
-        let vactive_lines = core::array::from_fn(|_| {
-            let mut buf = alloc::vec![!0; vactive_size];
-            buf[0] = hstx_cmd_raw_repeat(timing.h_front_porch);
-            buf[1] = timing.tmds3_for_sync(false, false);
-            buf[2] = hstx_cmd_raw_repeat(timing.h_sync_width);
-            buf[3] = timing.tmds3_for_sync(true, false);
-            buf[4] = hstx_cmd_raw_repeat(timing.h_back_porch);
-            buf[5] = timing.tmds3_for_sync(false, false);
-            buf[6] = hstx_cmd_tmds(timing.h_active_pixels);
-            buf.into()
-        });
+        let vline_size = 1 + timing.h_active_pixels as usize * BPP / 32;
+        for line in &DVI_OUT.video_lines {
+            let mut buf = alloc::vec![!0; vline_size];
+            buf[0] = hstx_cmd_tmds(timing.h_active_pixels);
+            unsafe {
+                (*line.get()).write(buf.into());
+            }
+        }
+
         // The number of video lines that have been set up by the
         // time of the first interrupt.
-        const INIT_TIMING_STATE: u32 = 2;
+        const INIT_TIMING_STATE: u32 = 1;
         DviInst {
             timing,
             dma_pong: false,
             timing_state: DviTimingState::new(INIT_TIMING_STATE),
-            vblank_line_vsync_off,
-            vblank_line_vsync_on,
-            vactive_lines,
-            available: [false; N_VIDEO_BUFFERS],
-            scan_render: ScanRender::new(),
-        }
-    }
-
-    /// Get a reference to an active video scanline, if available
-    #[link_section = ".data"]
-    fn active_video_line(&mut self) -> Option<&[u32]> {
-        if let Some(y) = self.timing_state.v_scanline_index(&self.timing, 0) {
-            let buf_ix = (y as usize / VERTICAL_REPEAT) % N_VIDEO_BUFFERS;
-            if self.available[buf_ix] {
-                return Some(&self.vactive_lines[buf_ix]);
-            }
-        }
-        None
-    }
-
-    /// Determine whether a line is available to scan into video.
-    ///
-    /// If a video render is to be scheduled this scanline, return the
-    /// scanline number and a boolean indicating whether the line buffer
-    /// is available.
-    ///
-    /// If no video render is to be scheduled, the scanline number is
-    /// `!0`.
-    ///
-    /// This method also updates the `available` table internally.
-    #[link_section = ".data"]
-    fn line_available(&mut self) -> (u32, bool) {
-        if let Some(y) = self
-            .timing_state
-            .v_scanline_index(&self.timing, VIDEO_PIPELINE_SLACK)
-        {
-            if y % VERTICAL_REPEAT as u32 == 0 {
-                let y = y / VERTICAL_REPEAT as u32;
-                let available = self.scan_render.is_line_available(y);
-                let buf_ix = y as usize % N_VIDEO_BUFFERS;
-                self.available[buf_ix] = available;
-                return (y, available);
-            }
-        }
-        (!0, false)
-    }
-
-    /// Render a scanline into a video buffer.
-    ///
-    /// This function is called even if the corresponding line buffer is not
-    /// available, so the display list can be advanced.
-    #[link_section = ".data"]
-    fn render_video_line(&mut self, y: u32, available: bool) {
-        let buf_ix = y as usize % N_VIDEO_BUFFERS;
-        let video_slice = &mut self.vactive_lines[buf_ix][ACTIVE_SYNC_WORDS..];
-        self.scan_render.render_scanline(video_slice, y, available);
-    }
-
-    /// Schedule rendering of a line
-    #[link_section = ".data"]
-    fn schedule_line_render(&mut self) {
-        let offset = VIDEO_PIPELINE_SLACK + (N_LINE_BUFS * VERTICAL_REPEAT) as u32;
-        if let Some(y) = self.timing_state.v_scanline_index(&self.timing, offset) {
-            if y % VERTICAL_REPEAT as u32 == 0 {
-                let y_line = y / VERTICAL_REPEAT as u32;
-                self.scan_render.schedule_line_render(y_line);
-            }
+            sync_pulse_vsync_off,
+            sync_pulse_vsync_on,
+            sync_line_only_vsync_off,
+            sync_line_only_vsync_on,
+            err_line,
+            missed: [false; N_VIDEO_BUFFERS],
         }
     }
 }
 
 #[link_section = ".data"]
 pub fn core1_main() -> ! {
+    let mut scan_render = ScanRender::new();
     unsafe {
         NVIC::unmask(Interrupt::DMA_IRQ_0);
     }
     loop {
-        let line_ix = CORE1_QUEUE.peek_blocking();
-        // Safety: exclusive access to the line buffer is granted
-        // when the render is scheduled to a core.
-        unsafe { render_line(line_ix) };
-        CORE1_QUEUE.remove();
+        let (y, mut guard) = DVI_OUT.get_line();
+        let line = guard.buf_mut();
+        scan_render.render_scanline(line, y);
     }
 }
 
@@ -352,29 +336,51 @@ fn DMA_IRQ_0() {
         let dma = &mut Peripherals::steal().DMA;
         let ch = dma.ch(ch_num);
         inst.dma_pong = !inst.dma_pong;
-        let cmds = if let Some(cmds) = inst.active_video_line() {
-            cmds
+        if inst.dma_pong {
+            // interrupt at end of sync pulse, set up next sync pulse
+            let cmds = match inst.timing_state.v_state(&inst.timing) {
+                DviTimingLineState::Sync => &inst.sync_pulse_vsync_on[..],
+                _ => &inst.sync_pulse_vsync_off[..],
+            };
+            dma.intr().write(|w| w.bits(1 << ch_num));
+            ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
+            ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
         } else {
-            let v_state = inst.timing_state.v_state(&inst.timing);
-            match v_state {
-                // TODO: should be error line, but probably little harm
-                DviTimingLineState::Active => &inst.vactive_lines[0],
-                DviTimingLineState::Sync => &inst.vblank_line_vsync_on[..],
-                _ => &inst.vblank_line_vsync_off[..],
+            // interrupt at end of line, set up next line
+            let cmds = match inst.timing_state.v_state(&inst.timing) {
+                DviTimingLineState::Active => {
+                    // TODO: could be optimized
+                    let y = inst
+                        .timing_state
+                        .v_scanline_index(&inst.timing, 0)
+                        .unwrap_or_default();
+                    let buf_ix = (y as usize / VERTICAL_REPEAT) % N_VIDEO_BUFFERS;
+                    if inst.missed[buf_ix] || DVI_OUT.line_lent[buf_ix].load(Acquire) {
+                        &inst.err_line[..]
+                    } else {
+                        (*DVI_OUT.video_lines[buf_ix].get()).assume_init_ref()
+                    }
+                }
+                DviTimingLineState::Sync => &inst.sync_line_only_vsync_on[..],
+                _ => &inst.sync_line_only_vsync_off[..],
+            };
+            dma.intr().write(|w| w.bits(1 << ch_num));
+            ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
+            ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
+            let offset = VIDEO_PIPELINE_SLACK + ((N_VIDEO_BUFFERS - 1) * VERTICAL_REPEAT) as u32;
+            if let Some(y) = inst.timing_state.v_scanline_index(&inst.timing, offset) {
+                if y as usize % VERTICAL_REPEAT == 0 {
+                    let y_scaled = y / VERTICAL_REPEAT as u32;
+                    let buf_ix = y_scaled as usize % N_VIDEO_BUFFERS;
+                    let missed = DVI_OUT.line_lent[buf_ix].load(Acquire);
+                    if !missed {
+                        DVI_OUT.line_queue.push_unchecked(y_scaled);
+                        DVI_OUT.line_lent[buf_ix].store(true, Relaxed);
+                    }
+                    inst.missed[buf_ix] = missed;
+                }
             }
-        };
-        dma.intr().write(|w| w.bits(1 << ch_num));
-        ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
-        ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
-        // Possible TODO: combine line_available and render_video_line, as
-        // there's not much value in having them separate. (It's likely the
-        // original motivation was to have the latter maybe outside the
-        // interrupt)
-        let (y, available) = inst.line_available();
-        if y as i32 >= 0 {
-            inst.render_video_line(y, available);
+            inst.timing_state.advance(&inst.timing);
         }
-        inst.schedule_line_render();
-        inst.timing_state.advance(&inst.timing);
     }
 }
