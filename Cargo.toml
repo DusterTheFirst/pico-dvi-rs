@@ -12,6 +12,9 @@ resolver = "2"
 publish = false
 version = "0.0.0"
 
+[features]
+audio = []
+
 [dependencies]
 cortex-m       = "0.7.2"
 cortex-m-rt    = "0.7"

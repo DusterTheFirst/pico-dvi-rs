@@ -1,3 +1,5 @@
+#[cfg(feature = "audio")]
+mod data_island;
 pub mod pinout;
 pub mod timing;
 
@@ -10,6 +12,11 @@ use core::{
         Ordering::{Acquire, Relaxed, Release},
     },
 };
+use embedded_hal::digital::StatefulOutputPin;
+use rp235x_hal::gpio::{bank0::Gpio10, FunctionSio, Pin, PullDown, SioOutput};
+
+#[cfg(feature = "audio")]
+use crate::dvi::{data_island::DataPacket, timing::SYNC_DATA_ISLAND_LEN};
 
 use crate::{
     hal::pac::{
@@ -66,7 +73,14 @@ pub struct DviInst {
     sync_line_only_vsync_on: [u32; SYNC_LINE_ONLY_WORDS],
     err_line: [u32; SYNC_LINE_ONLY_WORDS],
 
+    #[cfg(feature = "audio")]
+    data_island_sync: [u32; SYNC_DATA_ISLAND_LEN],
+    audio_buf: [[i16; 2]; 4],
+    audio_ix: usize,
+    frame_count: i32,
+
     missed: [bool; N_VIDEO_BUFFERS],
+    pin: Pin<Gpio10, FunctionSio<SioOutput>, PullDown>,
 }
 
 pub struct LineGuard<'a> {
@@ -275,7 +289,7 @@ pub unsafe fn setup_pins(pads: &PADS_BANK0, io: &IO_BANK0) {
 }
 
 impl DviInst {
-    pub fn new(timing: DviTiming) -> Self {
+    pub fn new(timing: DviTiming, pin: Pin<Gpio10, FunctionSio<SioOutput>, PullDown>) -> Self {
         let sync_pulse_vsync_off = timing.make_sync_pulse(false);
         let sync_pulse_vsync_on = timing.make_sync_pulse(true);
         let sync_line_only_vsync_off = timing.make_sync_line_only(false);
@@ -295,6 +309,11 @@ impl DviInst {
             }
         }
 
+        #[cfg(feature = "audio")]
+        let mut data_island_sync = [0; SYNC_DATA_ISLAND_LEN];
+        #[cfg(feature = "audio")]
+        timing.init_data_island(&mut data_island_sync);
+
         // The number of video lines that have been set up by the
         // time of the first interrupt.
         const INIT_TIMING_STATE: u32 = 1;
@@ -306,9 +325,53 @@ impl DviInst {
             sync_pulse_vsync_on,
             sync_line_only_vsync_off,
             sync_line_only_vsync_on,
+            #[cfg(feature = "audio")]
+            data_island_sync,
             err_line,
+            audio_buf: Default::default(),
+            audio_ix: 0,
+            frame_count: 0,
             missed: [false; N_VIDEO_BUFFERS],
+            pin,
         }
+    }
+
+    #[cfg(feature = "audio")]
+    #[link_section = ".data"]
+    /// Return true if audio buffer is updated
+    fn do_audio(&mut self, packet: &mut DataPacket) -> bool {
+        let y = self.timing_state.v_ctr();
+        // Strategy here is to encode audio on even scanlines. It's not clear this is
+        // fully spec-compliant, but we'll see.
+        let samples_this_scanline = ((0b10100 >> (y % 5)) & 1) + 1;
+        for i in 0..samples_this_scanline {
+            // 60Hz triangle wave
+            let t = y as f32 / 525.0;
+            let audio = (65536. * ((t - 0.5).abs() - 0.25)) as i16;
+            self.audio_buf[self.audio_ix + i] = [audio, audio];
+        }
+        self.audio_ix += samples_this_scanline;
+        if y % 2 == 0 {
+            packet.set_audio(&self.audio_buf[..self.audio_ix], &mut self.frame_count);
+            self.audio_ix = 0;
+        } else {
+            match y {
+                1 => packet.set_audio_info_frame(44_100),
+                3 => packet.set_avi_info_frame(
+                    data_island::ScanInfo::Underscan,
+                    data_island::PixelFormat::Rgb,
+                    data_island::Colorimetry::Itu601,
+                    data_island::PictureAspectRatio::Ratio4_3,
+                    data_island::ActiveFormatAspectRatio::SameAsPar,
+                    data_island::QuantizationRange::Full,
+                    data_island::VideoCode::Code640x480P60,
+                ),
+                5 => packet.set_audio_clock_regeneration(28000, 6272),
+                _ => return false,
+            }
+        }
+
+        true
     }
 }
 
@@ -317,6 +380,8 @@ pub fn core1_main() -> ! {
     let mut scan_render = ScanRender::new();
     unsafe {
         NVIC::unmask(Interrupt::DMA_IRQ_0);
+        let dma = &Peripherals::steal().DMA;
+        start_dma(dma);
     }
     loop {
         let (y, mut guard) = DVI_OUT.get_line();
@@ -332,17 +397,39 @@ pub fn core1_main() -> ! {
 fn DMA_IRQ_0() {
     unsafe {
         let inst = (*DVI_INST.0.get()).assume_init_mut();
+        _ = inst.pin.toggle();
         let ch_num = inst.dma_pong as usize;
         let dma = &mut Peripherals::steal().DMA;
+        dma.intr().write(|w| w.bits(1 << ch_num));
         let ch = dma.ch(ch_num);
         inst.dma_pong = !inst.dma_pong;
         if inst.dma_pong {
             // interrupt at end of sync pulse, set up next sync pulse
-            let cmds = match inst.timing_state.v_state(&inst.timing) {
+            #[cfg(feature = "audio")]
+            let mut pack = MaybeUninit::uninit();
+            #[cfg(feature = "audio")]
+            data_island::clear_data_packet(&mut pack);
+            #[cfg(feature = "audio")]
+            let packet = pack.assume_init_mut();
+            #[cfg(feature = "audio")]
+            let is_audio = inst.do_audio(packet);
+            let state = inst.timing_state.v_state(&inst.timing);
+            let cmds = match state {
+                #[cfg(feature = "audio")]
+                _ if is_audio => {
+                    inst.timing
+                        .encode_data_island(&mut inst.data_island_sync, state, packet);
+                    &inst.data_island_sync[..]
+                }
+                #[cfg(feature = "audio")]
+                DviTimingLineState::Active => {
+                    inst.timing
+                        .encode_data_island_empty(&mut inst.data_island_sync, state);
+                    &inst.data_island_sync[..]
+                }
                 DviTimingLineState::Sync => &inst.sync_pulse_vsync_on[..],
                 _ => &inst.sync_pulse_vsync_off[..],
             };
-            dma.intr().write(|w| w.bits(1 << ch_num));
             ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
             ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
         } else {
@@ -364,7 +451,6 @@ fn DMA_IRQ_0() {
                 DviTimingLineState::Sync => &inst.sync_line_only_vsync_on[..],
                 _ => &inst.sync_line_only_vsync_off[..],
             };
-            dma.intr().write(|w| w.bits(1 << ch_num));
             ch.ch_read_addr().write(|w| w.bits(cmds.as_ptr() as u32));
             ch.ch_trans_count().write(|w| w.bits(cmds.len() as u32));
             let offset = VIDEO_PIPELINE_SLACK + ((N_VIDEO_BUFFERS - 1) * VERTICAL_REPEAT) as u32;
@@ -382,5 +468,6 @@ fn DMA_IRQ_0() {
             }
             inst.timing_state.advance(&inst.timing);
         }
+        _ = inst.pin.toggle();
     }
 }
