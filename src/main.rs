@@ -25,6 +25,8 @@ use crate::{
 };
 
 mod clock;
+#[macro_use]
+mod console;
 mod demo;
 mod dvi;
 mod link;
@@ -72,6 +74,7 @@ static mut CORE1_STACK: Stack<1024> = Stack::new();
 
 #[rtic::app(device = crate::hal::pac, dispatchers = [ADC_IRQ_FIFO])]
 mod app {
+    use crate::console::write_string;
     use crate::dvi;
     use crate::hal::{
         self,
@@ -81,13 +84,13 @@ mod app {
         sio::Sio,
         watchdog::Watchdog,
     };
+    use core::fmt::Write;
     use core::mem::MaybeUninit;
     use core::pin::pin;
     use core::sync::atomic::AtomicU32;
     use core::sync::atomic::Ordering::Relaxed;
     use cotton_usb_host::host::rp235x::{UsbShared, UsbStatics};
-    use cotton_usb_host::usb_bus::{DeviceEvent, HubState, UsbBus};
-    use cotton_usb_host::wire::ShowDescriptors;
+    use cotton_usb_host::usb_bus::{DeviceEvent, HubState, UsbBus, UsbError};
     use defmt::info;
     use futures_util::StreamExt;
     use rtic::RacyCell;
@@ -219,7 +222,7 @@ mod app {
 
     #[idle(local = [led_pin], shared = [&val])]
     fn idle(cx: idle::Context) -> ! {
-        crate::demo::demo(cx.local.led_pin, cx.shared.val)
+        crate::console::display_console();
     }
 
     async fn rtic_delay(ms: usize) {
@@ -229,11 +232,9 @@ mod app {
         .await
     }
 
-    #[task(local = [resets, regs, dpram], shared = [&shared, &val], priority = 2)]
+    #[task(local = [resets, regs, dpram], shared = [&shared], priority = 2)]
     async fn usb_task(cx: usb_task::Context) {
-        cx.shared
-            .val
-            .store(0x100, core::sync::atomic::Ordering::Relaxed);
+        console!("starting usb");
         static USB_STATICS: RacyCell<UsbStatics> = RacyCell::new(UsbStatics::new());
         let statics = unsafe { &mut *USB_STATICS.get_mut() };
         let driver = cotton_usb_host::host::rp235x::Rp235xHostController::new(
@@ -247,26 +248,51 @@ mod app {
         let stack = UsbBus::new(driver);
         let mut p = pin!(stack.device_events(&hub_state, rtic_delay));
 
-        cx.shared.val.store(0xaa, Relaxed);
         loop {
             let device = p.next().await;
-            cx.shared.val.fetch_add(0x1, Relaxed);
 
             if let Some(DeviceEvent::Connect(device, info)) = device {
-                cx.shared.val.fetch_add(1, Relaxed);
-            } else if device.is_none() {
-                rtic_delay(500).await;
-                cx.shared.val.store(0x0, Relaxed);
-                rtic_delay(500).await;
-            } else if let Some(DeviceEvent::HubConnect(_)) = device {
-                cx.shared.val.fetch_add(0x100, Relaxed);
-            } else if let Some(DeviceEvent::Disconnect(_)) = device {
-                cx.shared.val.fetch_add(0x1000, Relaxed);
-            } else if let Some(DeviceEvent::EnumerationError(_, _, _)) = device {
-                cx.shared.val.fetch_add(0x10000, Relaxed);
+                console!("DeviceEvent::Connect(_, _)");
+            } else if let Some(DeviceEvent::HubConnect(d)) = device {
+                console!("DeviceEvent::HubConnect(addr = {})", d.address());
+            } else if let Some(DeviceEvent::Disconnect(bitset)) = device {
+                let mut s = alloc::string::String::new();
+                for addr in bitset.iter() {
+                    let sep = if s.is_empty() { "" } else { ", " };
+                    _ = write!(&mut s, "{sep}{addr}");
+                }
+                console!("DeviceEvent::Disconnect({s})");
+            } else if let Some(DeviceEvent::EnumerationError(addr, port, e)) = device {
+                console!(
+                    "DeviceEvent::EnumerationError({addr}, {port}, {})",
+                    format_usb_error(&e)
+                );
             } else if let Some(DeviceEvent::None) = device {
-                //cx.shared.val.store(0x4, Relaxed);
+                console!("DeviceEvent::None");
+            } else if device.is_none() {
+                console!("device stream next = None");
+                rtic_delay(500).await;
+            } else {
+                console!("unhandled case (should be unreachable)");
             }
+        }
+    }
+
+    // we should probably just figure out how to extract strings from defmt
+    fn format_usb_error(e: &UsbError) -> &str {
+        match e {
+            UsbError::Stall => "Stall",
+            UsbError::Timeout => "Timeout",
+            UsbError::Overflow => "Overflow",
+            UsbError::BitStuffError => "BitStuffError",
+            UsbError::CrcError => "CrcError",
+            UsbError::DataSeqError => "DataSeqError",
+            UsbError::BufferTooSmall => "BufferTooSmall",
+            UsbError::AllPipesInUse => "AllPipesInUse",
+            UsbError::ProtocolError => "ProtocolError",
+            UsbError::TooManyDevices => "TooManyDevices",
+            UsbError::NoSuchEndpoint => "NoSuchEndPoint",
+            _ => "[unhandled UsbError]",
         }
     }
 
