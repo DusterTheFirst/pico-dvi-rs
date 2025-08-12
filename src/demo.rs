@@ -19,12 +19,12 @@ const TILE_DATA: &[u32] = &[
     0x44444444, 0x44454444, 0x44444444, 0x44454444, 0x66444444, 0x44454444, 0x44444444, 0x44454444,
 ];
 
-struct Counter<P: PinId> {
-    led_pin: Pin<P, FunctionSioOutput, PullDown>,
+struct Counter<'a, P: PinId> {
+    led_pin: &'a mut Pin<P, FunctionSioOutput, PullDown>,
     count: u32,
 }
 
-impl<P: PinId> Counter<P> {
+impl<P: PinId> Counter<'_, P> {
     // We might just want to move the led pin into the serializer,
     // but for the moment we let the app continue to own it.
     fn count(&mut self) {
@@ -128,7 +128,7 @@ fn tiles<P: PinId>(counter: &Counter<P>) {
     end_display_list(rb, sb);
 }
 
-pub fn demo<P: PinId>(led_pin: Pin<P, FunctionSioOutput, PullDown>) -> ! {
+pub fn demo<P: PinId>(led_pin: &mut Pin<P, FunctionSioOutput, PullDown>) -> ! {
     let mut counter = Counter { led_pin, count: 0 };
     let mut game_of_life = GameOfLife::new(include_str!("demo/universe.txt"));
 

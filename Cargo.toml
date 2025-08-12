@@ -30,6 +30,17 @@ fugit    = { version = "0.3.6", features = ["defmt"] }
 #pio-proc = "0.2.1"
 rp235x-hal = { version = "0.3.0", features = ["binary-info", "critical-section-impl", "rt", "defmt"] }
 
+rtic = { version = "2.1", features = ["thumbv8main-backend"] }
+
+[dependencies.cotton-usb-host]
+git = "https://github.com/pdh11/cotton"
+branch = "pdh-rp2350"
+default-features = false
+features = [ "rp235x" ]
+
+[patch.crates-io]
+rp235x-pac = { git = "https://github.com/jannic-dev-forks/rp235x-pac", rev = "fa7fc1f", version = "0.1", optional = true }
+
 # TODO: use for bitfield
 # bilge = "0.1.5"
 

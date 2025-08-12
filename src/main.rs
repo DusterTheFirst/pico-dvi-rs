@@ -11,13 +11,7 @@ use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking 
 
 use defmt::info;
 use embedded_alloc::Heap;
-use hal::{
-    dma::DMAExt,
-    gpio::PinState,
-    multicore::{Multicore, Stack},
-    sio::Sio,
-    watchdog::Watchdog,
-};
+use hal::multicore::Stack;
 use render::{init_display_swapcell, Palette4bppFast};
 use rp235x_hal as hal;
 
@@ -76,10 +70,121 @@ static DVI_OUT: DviOut = DviOut::new();
 
 static mut CORE1_STACK: Stack<1024> = Stack::new();
 
-// Separate macro annotated function to make rust-analyzer fixes apply better
-#[hal::entry]
-fn macro_entry() -> ! {
-    entry();
+#[rtic::app(device = crate::hal::pac)]
+mod app {
+    use crate::dvi;
+    use crate::hal::{
+        self,
+        dma::DMAExt,
+        gpio::{bank0::Gpio7, FunctionSio, Pin, PinState, PullDown, SioOutput},
+        multicore::Multicore,
+        sio::Sio,
+        watchdog::Watchdog,
+    };
+    use core::mem::MaybeUninit;
+    use defmt::info;
+
+    #[shared]
+    struct Shared {}
+
+    #[local]
+    struct Local {
+        led_pin: Pin<Gpio7, FunctionSio<SioOutput>, PullDown>,
+    }
+
+    #[init]
+    fn init(cx: init::Context) -> (Shared, Local) {
+        info!("Program start");
+
+        // Test allocations in different memory regions
+        crate::rom();
+        crate::ram();
+        crate::ram_x();
+        crate::ram_y();
+        defmt::info!("If we have not panicked by now, memory regions probably work well");
+
+        {
+            const HEAP_SIZE: usize = 128 * 1024;
+            static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
+            unsafe { crate::HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
+        }
+
+        let mut peripherals = cx.device;
+
+        crate::sysinfo(&peripherals.SYSINFO);
+        let mut watchdog = Watchdog::new(peripherals.WATCHDOG);
+        let single_cycle_io = Sio::new(peripherals.SIO);
+
+        let timing = crate::VGA_TIMING;
+
+        // External high-speed crystal on the pico board is 12Mhz
+        let _clocks = crate::init_clocks(
+            peripherals.XOSC,
+            peripherals.ROSC,
+            peripherals.CLOCKS,
+            peripherals.PLL_SYS,
+            peripherals.PLL_USB,
+            &mut peripherals.RESETS,
+            &mut watchdog,
+            timing.bit_clk / crate::HSTX_MULTIPLE,
+            2 / crate::HSTX_MULTIPLE,
+        );
+
+        let pins = hal::gpio::Pins::new(
+            peripherals.IO_BANK0,
+            peripherals.PADS_BANK0,
+            single_cycle_io.gpio_bank0,
+            &mut peripherals.RESETS,
+        );
+
+        // LED is pin 7 on Feather 2350 board. We don't have board crates yet for Pico 2
+        let led_pin = pins.gpio7.into_push_pull_output_in_state(PinState::Low);
+        let gpio_pin = pins.gpio10.into_push_pull_output_in_state(PinState::Low);
+
+        let _dma = peripherals.DMA.split(&mut peripherals.RESETS);
+
+        let width = timing.h_active_pixels;
+
+        unsafe {
+            (*crate::DVI_INST.0.get()).write(crate::DviInst::new(timing, gpio_pin));
+            // Maybe do more safety theater here. The problem is that pins can't
+            // set the HSTX function.
+            let periphs = hal::pac::Peripherals::steal();
+            periphs.RESETS.reset().modify(|_, w| w.hstx().clear_bit());
+            while periphs.RESETS.reset_done().read().hstx().bit_is_clear() {}
+            use dvi::pinout::DviPair::*;
+            // Pinout for Adafruit Feather RP2350
+            //let pinout = DviPinout::new([D2, Clk, D1, D0], DviPolarity::Pos);
+            // Pinout for Olimex RP2350pc
+            let pinout = crate::DviPinout::new([D0, Clk, D2, D1], crate::DviPolarity::Pos);
+            dvi::setup_hstx(&periphs.HSTX_CTRL, pinout);
+            dvi::setup_dma(&periphs.DMA, &periphs.HSTX_FIFO);
+            periphs
+                .BUSCTRL
+                .bus_priority()
+                .write(|w| w.dma_r().set_bit().dma_w().set_bit());
+            dvi::setup_pins(&periphs.PADS_BANK0, &periphs.IO_BANK0);
+        }
+
+        crate::init_display_swapcell(width);
+
+        let mut fifo = single_cycle_io.fifo;
+        let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
+        let cores = mc.cores();
+        let core1 = &mut cores[1];
+        core1
+            .spawn(unsafe { crate::CORE1_STACK.take().unwrap() }, move || {
+                crate::core1_main()
+            })
+            .unwrap();
+
+        (Shared {}, Local { led_pin })
+    }
+
+    #[idle(local = [led_pin])]
+    fn idle(cx: idle::Context) -> ! {
+        crate::demo::demo(cx.local.led_pin)
+    }
 }
 
 const PALETTE: &[u32; 16] = &[
@@ -89,94 +194,6 @@ const PALETTE: &[u32; 16] = &[
 
 #[link_section = ".data"]
 pub static PALETTE_4BPP: Palette4bppFast = Palette4bppFast::new(PALETTE);
-
-fn entry() -> ! {
-    info!("Program start");
-
-    // Test allocations in different memory regions
-    rom();
-    ram();
-    ram_x();
-    ram_y();
-    defmt::info!("If we have not panicked by now, memory regions probably work well");
-
-    {
-        const HEAP_SIZE: usize = 128 * 1024;
-        static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
-        unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
-    }
-
-    let mut peripherals = hal::pac::Peripherals::take().unwrap();
-    //let core_peripherals = pac::CorePeripherals::take().unwrap();
-
-    sysinfo(&peripherals.SYSINFO);
-
-    let mut watchdog = Watchdog::new(peripherals.WATCHDOG);
-    let single_cycle_io = Sio::new(peripherals.SIO);
-
-    let timing = VGA_TIMING;
-
-    // External high-speed crystal on the pico board is 12Mhz
-    let _clocks = init_clocks(
-        peripherals.XOSC,
-        peripherals.ROSC,
-        peripherals.CLOCKS,
-        peripherals.PLL_SYS,
-        peripherals.PLL_USB,
-        &mut peripherals.RESETS,
-        &mut watchdog,
-        timing.bit_clk / HSTX_MULTIPLE,
-        2 / HSTX_MULTIPLE,
-    );
-
-    let pins = hal::gpio::Pins::new(
-        peripherals.IO_BANK0,
-        peripherals.PADS_BANK0,
-        single_cycle_io.gpio_bank0,
-        &mut peripherals.RESETS,
-    );
-
-    // LED is pin 7 on Feather 2350 board. We don't have board crates yet for Pico 2
-    let led_pin = pins.gpio7.into_push_pull_output_in_state(PinState::Low);
-    let gpio_pin = pins.gpio10.into_push_pull_output_in_state(PinState::Low);
-
-    let _dma = peripherals.DMA.split(&mut peripherals.RESETS);
-
-    let width = timing.h_active_pixels;
-
-    unsafe {
-        (*DVI_INST.0.get()).write(DviInst::new(timing, gpio_pin));
-        // Maybe do more safety theater here. The problem is that pins can't
-        // set the HSTX function.
-        let periphs = hal::pac::Peripherals::steal();
-        periphs.RESETS.reset().modify(|_, w| w.hstx().clear_bit());
-        while periphs.RESETS.reset_done().read().hstx().bit_is_clear() {}
-        use dvi::pinout::DviPair::*;
-        // Pinout for Adafruit Feather RP2350
-        let pinout = DviPinout::new([D2, Clk, D1, D0], DviPolarity::Pos);
-        // Pinout for Olimex RP2350pc
-        //let pinout = DviPinout::new([D0, Clk, D2, D1], DviPolarity::Pos);
-        dvi::setup_hstx(&periphs.HSTX_CTRL, pinout);
-        dvi::setup_dma(&periphs.DMA, &periphs.HSTX_FIFO);
-        periphs
-            .BUSCTRL
-            .bus_priority()
-            .write(|w| w.dma_r().set_bit().dma_w().set_bit());
-        dvi::setup_pins(&periphs.PADS_BANK0, &periphs.IO_BANK0);
-    }
-
-    init_display_swapcell(width);
-
-    let mut fifo = single_cycle_io.fifo;
-    let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
-    let cores = mc.cores();
-    let core1 = &mut cores[1];
-    core1
-        .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || core1_main())
-        .unwrap();
-
-    demo::demo(led_pin);
-}
 
 fn sysinfo(sysinfo: &hal::pac::SYSINFO) {
     let is_fpga = sysinfo.platform().read().fpga().bit();
