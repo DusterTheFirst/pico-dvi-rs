@@ -31,6 +31,8 @@ fugit    = { version = "0.3.6", features = ["defmt"] }
 rp235x-hal = { version = "0.3.0", features = ["binary-info", "critical-section-impl", "rt", "defmt"] }
 
 rtic = { version = "2.1", features = ["thumbv8main-backend"] }
+rtic-monotonics = { version = "2.0.2", features = ["rp235x"] }
+futures-util = { version = "0.3", default-features = false }
 
 [dependencies.cotton-usb-host]
 git = "https://github.com/pdh11/cotton"

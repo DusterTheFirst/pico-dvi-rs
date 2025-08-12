@@ -1,3 +1,5 @@
+use core::sync::atomic::AtomicU32;
+
 use alloc::format;
 use embedded_hal::digital::StatefulOutputPin;
 
@@ -35,7 +37,7 @@ impl<P: PinId> Counter<'_, P> {
     }
 }
 
-fn colorbars<P: PinId>(counter: &Counter<P>) {
+fn colorbars<P: PinId>(counter: &Counter<P>, val: u32) {
     let height = 480 / VERTICAL_REPEAT as u32;
     let (mut rb, mut sb) = start_display_list();
     rb.begin_stripe(height - FONT_HEIGHT);
@@ -69,7 +71,7 @@ fn colorbars<P: PinId>(counter: &Counter<P>) {
     sb.solid(92, rgb(0x13, 0x13, 0x13));
     sb.end_stripe();
     rb.begin_stripe(FONT_HEIGHT);
-    let text = format!("Hello pico-dvi-rs, frame {}", counter.count);
+    let text = format!("Hello pico-dvi-rs, frame {}, val={val:x}", counter.count);
     let width = rb.text(&text);
     let width = width + width % 2;
     rb.end_stripe();
@@ -128,14 +130,14 @@ fn tiles<P: PinId>(counter: &Counter<P>) {
     end_display_list(rb, sb);
 }
 
-pub fn demo<P: PinId>(led_pin: &mut Pin<P, FunctionSioOutput, PullDown>) -> ! {
+pub fn demo<P: PinId>(led_pin: &mut Pin<P, FunctionSioOutput, PullDown>, val: &AtomicU32) -> ! {
     let mut counter = Counter { led_pin, count: 0 };
     let mut game_of_life = GameOfLife::new(include_str!("demo/universe.txt"));
 
     loop {
-        for _ in 0..120 {
+        for _ in 0..1200 {
             counter.count();
-            colorbars(&counter);
+            colorbars(&counter, val.load(core::sync::atomic::Ordering::Relaxed));
         }
         for _ in 0..240 {
             counter.count();

@@ -128,7 +128,7 @@ pub fn init_clocks(
         &mut clocks,
         resets,
     )
-    .expect("sys pll should be configured");
+    .expect("usb pll should be configured");
 
     let clocks = configure_clocks(clocks, xosc, pll_sys, pll_usb, hstx_divisor);
 
