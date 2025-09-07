@@ -31,6 +31,8 @@ use crate::{
 };
 
 mod clock;
+#[macro_use]
+mod console;
 mod demo;
 mod dvi;
 mod link;
@@ -153,9 +155,11 @@ fn entry() -> ! {
         while periphs.RESETS.reset_done().read().hstx().bit_is_clear() {}
         use dvi::pinout::DviPair::*;
         // Pinout for Adafruit Feather RP2350
-        let pinout = DviPinout::new([D2, Clk, D1, D0], DviPolarity::Pos);
+        // let pinout = DviPinout::new([D2, Clk, D1, D0], DviPolarity::Pos);
         // Pinout for Olimex RP2350pc
         //let pinout = DviPinout::new([D0, Clk, D2, D1], DviPolarity::Pos);
+        // Pinout for Adafruit Fruit Jam
+        let pinout = crate::DviPinout::new([Clk, D0, D1, D2], crate::DviPolarity::Neg);
         dvi::setup_hstx(&periphs.HSTX_CTRL, pinout);
         dvi::setup_dma(&periphs.DMA, &periphs.HSTX_FIFO);
         periphs
@@ -175,7 +179,8 @@ fn entry() -> ! {
         .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || core1_main())
         .unwrap();
 
-    demo::demo(led_pin);
+    console!("hello pico-dvi-rs");
+    console::display_console();
 }
 
 fn sysinfo(sysinfo: &hal::pac::SYSINFO) {
