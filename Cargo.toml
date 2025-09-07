@@ -26,8 +26,8 @@ defmt-rtt   = "0.4.0"
 panic-probe = { version = "0.3.0", features = ["print-defmt"] }
 
 fugit    = { version = "0.3.6", features = ["defmt"] }
-#pio      = "0.2.1"
-#pio-proc = "0.2.1"
+pio      = "0.2.1"
+pio-proc = "0.2.1"
 rp235x-hal = { version = "0.3.0", features = ["binary-info", "critical-section-impl", "rt", "defmt"] }
 
 # TODO: use for bitfield

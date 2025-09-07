@@ -80,7 +80,6 @@ pub struct DviInst {
     frame_count: i32,
 
     missed: [bool; N_VIDEO_BUFFERS],
-    pin: Pin<Gpio10, FunctionSio<SioOutput>, PullDown>,
 }
 
 pub struct LineGuard<'a> {
@@ -289,7 +288,7 @@ pub unsafe fn setup_pins(pads: &PADS_BANK0, io: &IO_BANK0) {
 }
 
 impl DviInst {
-    pub fn new(timing: DviTiming, pin: Pin<Gpio10, FunctionSio<SioOutput>, PullDown>) -> Self {
+    pub fn new(timing: DviTiming) -> Self {
         let sync_pulse_vsync_off = timing.make_sync_pulse(false);
         let sync_pulse_vsync_on = timing.make_sync_pulse(true);
         let sync_line_only_vsync_off = timing.make_sync_line_only(false);
@@ -332,7 +331,6 @@ impl DviInst {
             audio_ix: 0,
             frame_count: 0,
             missed: [false; N_VIDEO_BUFFERS],
-            pin,
         }
     }
 
@@ -397,7 +395,6 @@ pub fn core1_main() -> ! {
 fn DMA_IRQ_0() {
     unsafe {
         let inst = (*DVI_INST.0.get()).assume_init_mut();
-        _ = inst.pin.toggle();
         let ch_num = inst.dma_pong as usize;
         let dma = &mut Peripherals::steal().DMA;
         dma.intr().write(|w| w.bits(1 << ch_num));
@@ -468,6 +465,5 @@ fn DMA_IRQ_0() {
             }
             inst.timing_state.advance(&inst.timing);
         }
-        _ = inst.pin.toggle();
     }
 }

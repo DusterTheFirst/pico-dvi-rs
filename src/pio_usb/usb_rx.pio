@@ -1,0 +1,5 @@
+.program usb_rx
+
+.wrap_target
+    in pins, 2
+.wrap

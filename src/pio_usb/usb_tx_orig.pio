@@ -1,0 +1,29 @@
+.program usb_tx
+.origin 0
+.define SE0 0
+.define J 1
+.define K 2
+.side_set 2 opt
+
+eop:
+    jmp eop_impl [1]
+bit_one: 
+    jmp y-- nostuff [2]
+    nop
+bit_zero: 
+    set y, 5
+    jmp !x j_zero
+start:
+    set x, 0 side J
+    out pc, 2
+j_zero:
+    set x, 1 side K
+nostuff:
+    out pc, 2
+eop_impl:
+    nop side SE0 [3]
+    nop side SE0 [3]
+    nop side J [3]
+.wrap_target
+    set pindirs, 0
+.wrap
