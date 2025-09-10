@@ -3,3 +3,45 @@
 .wrap_target
     in pins, 2
 .wrap
+
+// .define public IRQ_RX_EOP 1
+// 
+// start:
+//     jmp pin start
+//     nop [5]
+// pin_went_low:
+//     in null, 1
+// pin_went_low_1:
+//     set y, 6
+// pin_low:
+//     jmp pin pin_went_high
+//     jmp pin pin_went_high
+//     jmp pin pin_went_high
+//     jmp pin pin_went_high
+//     in osr, 1 [4]
+//     jmp y-- pin_low
+//     // bit stuffing error, but can ignore
+// 
+// pin_went_high:
+//     jmp y-- not_stuffed
+//     // was stuffed bit, don't output
+//     jmp went_high_1
+// not_stuffed:
+//     in null, 1
+// went_high_1:
+//     set y, 5
+//     mov x, pins
+//     jmp x-- eop [8]
+// went_high_2:
+//     mov x, pins
+//     jmp pin pin_still_high
+//     jmp y-- pin_went_low
+//     jmp pin_went_low_1
+// 
+// pin_still_high:
+//     jmp x-- eop
+//     in osr, 1 [5]
+//     jmp y-- went_high_2
+// 
+// eop:
+//     irq wait IRQ_RX_EOP

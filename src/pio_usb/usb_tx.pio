@@ -18,7 +18,7 @@ nostuff:
     out pc, 1
 bit_one:
     jmp y-- nostuff [1]
-    jmp bit_zero
+    jmp bit_zero [1]
 start:
     set pins, J
     out x, 32

@@ -12,6 +12,7 @@ use rp235x_hal::{
     Timer,
 };
 
+#[link_section = ".data"]
 pub fn do_pio_experiment(pins: Pins, pio: PIO0, mut timer: Timer<impl TimerDevice>) {
     let ticks0 = SYST::get_current();
     let led = pins.gpio29.into_push_pull_output_in_state(PinState::Low);
@@ -44,7 +45,7 @@ pub fn do_pio_experiment(pins: Pins, pio: PIO0, mut timer: Timer<impl TimerDevic
         .set_pins(usb_host_data_plus.id().num, 2)
         .out_pins(usb_host_data_plus.id().num, 2)
         .in_pin_base(usb_host_data_plus.id().num)
-        .clock_divisor_fixed_point(0, 0)
+        //.clock_divisor_fixed_point(0, 0)
         .pull_threshold(8)
         .autopull(true)
         .push_threshold(32)
@@ -74,14 +75,15 @@ pub fn do_pio_experiment(pins: Pins, pio: PIO0, mut timer: Timer<impl TimerDevic
     let rx_installed = pio.install(&rx_program.program).unwrap();
     let (rx_sm, mut rx, _) = rp235x_hal::pio::PIOBuilder::from_installed_program(rx_installed)
         .in_pin_base(usb_host_data_plus.id().num)
-        .clock_divisor_fixed_point(0, 0)
+        //.clock_divisor_fixed_point(0, 0)
         .push_threshold(32)
         .autopush(true)
-        //.buffers(Buffers::OnlyRx)
+        .buffers(Buffers::OnlyRx)
         .build(sm1);
     tx.write(16);
     tx.write(0x80);
-    tx.write(0x00);
+    tx.write(0xff);
+    tx.write(0xff);
     tx.write(0xff);
 
     sm.with(rx_sm).start();
