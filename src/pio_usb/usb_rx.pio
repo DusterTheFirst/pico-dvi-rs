@@ -1,5 +1,6 @@
 .program usb_rx
 
+    wait 1 pin 0
 .wrap_target
     in pins, 2
 .wrap
@@ -7,8 +8,7 @@
 // .define public IRQ_RX_EOP 1
 // 
 // start:
-//     jmp pin start
-//     nop [5]
+//     wait 0 pin 0 [5]
 // pin_went_low:
 //     in null, 1
 // pin_went_low_1:
