@@ -1,3 +1,8 @@
+// This is the original version of TX with a 2 bit encoding. It is 4 pio
+// cycles per bit clock.
+
+// Encoding: 0 = EOP, 1 = bit one, 3 = bit zero
+
 .program usb_tx
 .origin 0
 .define SE0 0

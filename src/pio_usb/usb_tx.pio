@@ -7,7 +7,8 @@
     jmp x-- bit_zero
     jmp x-- bit_one
     set pins, SE0 [7]
-    set pins, J [3]
+    // commented out to fit tx and rx in same sm without juggling
+//    set pins, J [3]
 .wrap_target
     set pindirs, 0
 .wrap

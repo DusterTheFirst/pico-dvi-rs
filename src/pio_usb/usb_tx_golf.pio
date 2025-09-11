@@ -1,0 +1,22 @@
+// A code golfed version of tx, 4 PIO cycles per bit
+
+// 0: bit 1
+// 1: bit 0
+// 2: eop
+// 3: 1 bit of J then hi-z
+
+eop:
+    jmp y-- nostuff [2]
+    jmp bit_zero
+    set bits, SE0 [7]
+    set bits, J [3]
+.wrap_target
+    set pindirs, 0
+.wrap
+bit_zero:
+    // Assumes input inverted
+    mov bits, bits
+    set y, 5
+nostuff:
+    out pc, 2
+
