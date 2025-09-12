@@ -1,3 +1,5 @@
+mod crc;
+
 use embedded_hal::{
     delay::DelayNs,
     digital::{InputPin, OutputPin},
@@ -13,6 +15,8 @@ use rp235x_hal::{
     timer::TimerDevice,
     Timer,
 };
+
+use crate::pio_usb::crc::{calc_usb_crc5, update_crc_16};
 
 // Very low level PIO functions
 
@@ -163,6 +167,60 @@ impl<PIO: PIOExt> UsbPio<PIO> {
         }
     }
 
+    #[link_section = ".data"]
+    #[allow(unused)]
+    fn tx_token(&mut self, pid: u8, addr: u8, ep_num: u8) {
+        let data = ((ep_num as u16 & 0xf) << 7) | (addr as u16 & 0x7f);
+        let crc = calc_usb_crc5(data);
+        let packet = [0x80, pid, data as u8, (crc << 3) | (data >> 8) as u8];
+        self.tx_packet(&packet);
+    }
+
+    /// Transmit a data packet.
+    ///
+    /// We calcuate CRC on the fly.
+    #[link_section = ".data"]
+    #[allow(unused)]
+    fn tx_data(&mut self, pid: u8, data: &[u8]) {
+        self.setup_tx(data.len() + 4);
+        self.tx.write(0x80);
+        self.tx.write(pid as u32);
+        let mut i = 0;
+        let mut crc = 0xffff;
+        while i < data.len() {
+            let data = data[i];
+            if self.tx.write(data as u32) {
+                crc = update_crc_16(crc, data);
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        unsafe {
+            pio_sm_start(&self.tx_sm);
+        }
+        while i < data.len() {
+            let data = data[i];
+            if self.tx.write(data as u32) {
+                crc = update_crc_16(crc, data);
+                i += 1;
+            }
+        }
+        crc ^= 0xffff;
+        while !self.tx.write(crc as u8 as u32) {}
+        while !self.tx.write((crc >> 8) as u32) {}
+        self.finish_tx();
+    }
+
+    #[link_section = ".data"]
+    fn finish_tx(&mut self) {
+        while !self.tx.write(0xff) {}
+        while self.tx_sm.instruction_address() != TX_IDLE_ADDRESS {}
+        unsafe {
+            pio_sm_stop(&self.tx_sm);
+        }
+    }
+
     /// Transmit a packet.
     ///
     /// The packet must include SYNC (0x80) and any CRC.
@@ -185,14 +243,8 @@ impl<PIO: PIOExt> UsbPio<PIO> {
                 i += 1;
             }
         }
-        while !self.tx.write(0xff) {}
-        while self.tx_sm.instruction_address() != TX_IDLE_ADDRESS {}
-        unsafe {
-            pio_sm_stop(&self.tx_sm);
-        }
+        self.finish_tx();
     }
-
-    // TODO: transmission with crc
 
     fn prime_rx(&mut self) {
         // still hacky and for debugging
