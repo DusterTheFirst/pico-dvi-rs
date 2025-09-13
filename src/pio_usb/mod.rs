@@ -20,6 +20,15 @@ use crate::pio_usb::crc::{calc_usb_crc5, update_crc_16};
 
 // Very low level PIO functions
 
+const SYNC: u8 = 0x80;
+const PID_SETUP: u8 = 0x2d;
+const PID_DATA0: u8 = 0xc3;
+
+#[inline]
+fn pio_addr<S: ValidStateMachine, State>(_sm: &StateMachine<S, State>) -> *mut u32 {
+    (0x50200000 + S::PIO::id() * 0x100000) as *mut u32
+}
+
 #[inline]
 unsafe fn write_bitmask_set(register: *mut u32, bits: u32) {
     let alias = (register as usize + 0x2000) as *mut u32;
@@ -33,19 +42,28 @@ unsafe fn write_bitmask_clear(register: *mut u32, bits: u32) {
 }
 
 #[inline]
-unsafe fn pio_sm_start<S: ValidStateMachine, State>(_sm: &StateMachine<S, State>) {
-    let pio_addr = 0x50200000 + S::PIO::id() * 0x100000;
-    write_bitmask_set(pio_addr as *mut u32, 1 << S::id());
+unsafe fn pio_sm_start<S: ValidStateMachine, State>(sm: &StateMachine<S, State>) {
+    write_bitmask_set(pio_addr(sm), 1 << S::id());
 }
 
 #[inline]
-unsafe fn pio_sm_stop<S: ValidStateMachine, State>(_sm: &StateMachine<S, State>) {
-    let pio_addr = 0x50200000 + S::PIO::id() * 0x100000;
-    write_bitmask_clear(pio_addr as *mut u32, 1 << S::id());
+unsafe fn pio_sm_restart<S: ValidStateMachine, State>(sm: &StateMachine<S, State>) {
+    write_bitmask_set(pio_addr(sm), (1 << 4) << S::id());
+}
+
+#[inline]
+unsafe fn pio_sm_stop<S: ValidStateMachine, State>(sm: &StateMachine<S, State>) {
+    write_bitmask_clear(pio_addr(sm), 1 << S::id());
+}
+
+#[inline]
+unsafe fn pio_write_instr<PIO: PIOExt>(_pio: &rp235x_hal::pio::PIO<PIO>, n: usize, instr: u16) {
+    let pio_addr = 0x50200000 + PIO::id() + 0x48 + 4 * n;
+    core::ptr::write_volatile(pio_addr as *mut u16, instr);
 }
 
 // TODO: set this to 4 when we reinstate J state
-const TX_IDLE_ADDRESS: u32 = 3;
+const TX_IDLE_ADDRESS: u32 = 4;
 
 struct UsbPio<PIO: PIOExt> {
     tx_sm: StateMachine<(PIO, SM0), Stopped>,
@@ -129,6 +147,9 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             delay: 0,
             side_set: None,
         });
+        unsafe {
+            pio_sm_restart(&self.tx_sm);
+        }
         self.tx_sm.exec_instruction(Instruction {
             operands: pio::InstructionOperands::OUT {
                 destination: pio::OutDestination::X,
@@ -155,7 +176,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
     #[allow(unused)]
     fn tx_handshake(&mut self, pid: u8) {
         self.setup_tx(2);
-        self.tx.write(0x80);
+        self.tx.write(SYNC as u32);
         self.tx.write(pid as u32);
         self.tx.write(0xff);
         unsafe {
@@ -172,7 +193,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
     fn tx_token(&mut self, pid: u8, addr: u8, ep_num: u8) {
         let data = ((ep_num as u16 & 0xf) << 7) | (addr as u16 & 0x7f);
         let crc = calc_usb_crc5(data);
-        let packet = [0x80, pid, data as u8, (crc << 3) | (data >> 8) as u8];
+        let packet = [SYNC, pid, data as u8, (crc << 3) | (data >> 8) as u8];
         self.tx_packet(&packet);
     }
 
@@ -183,7 +204,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
     #[allow(unused)]
     fn tx_data(&mut self, pid: u8, data: &[u8]) {
         self.setup_tx(data.len() + 4);
-        self.tx.write(0x80);
+        self.tx.write(SYNC as u32);
         self.tx.write(pid as u32);
         let mut i = 0;
         let mut crc = 0xffff;
@@ -215,7 +236,17 @@ impl<PIO: PIOExt> UsbPio<PIO> {
     #[link_section = ".data"]
     fn finish_tx(&mut self) {
         while !self.tx.write(0xff) {}
-        while self.tx_sm.instruction_address() != TX_IDLE_ADDRESS {}
+        let count = 1_000_000;
+        for i in 0..count {
+            if self.tx_sm.instruction_address() == TX_IDLE_ADDRESS {
+                console!("tx count = {i}");
+                break;
+            }
+            if i == count - 1 {
+                console!("tx timeout");
+            }
+        }
+        //while self.tx_sm.instruction_address() != TX_IDLE_ADDRESS {}
         unsafe {
             pio_sm_stop(&self.tx_sm);
         }
@@ -246,26 +277,33 @@ impl<PIO: PIOExt> UsbPio<PIO> {
         self.finish_tx();
     }
 
-    fn prime_rx(&mut self) {
-        // still hacky and for debugging
-        const LINE_STATE_J: u8 = 1;
-        self.tx_sm.exec_instruction(Instruction {
-            operands: pio::InstructionOperands::SET {
-                destination: pio::SetDestination::PINS,
-                data: LINE_STATE_J,
-            },
-            delay: 0,
-            side_set: None,
-        });
-        self.tx_sm.exec_instruction(Instruction {
-            operands: pio::InstructionOperands::SET {
-                destination: pio::SetDestination::PINDIRS,
-                data: 3,
-            },
-            delay: 0,
-            side_set: None,
-        });
+    fn prepare_rx(&mut self) {
+        unsafe {
+            let instr = Instruction {
+                operands: pio::InstructionOperands::WAIT {
+                    polarity: 1,
+                    source: pio::WaitSource::PIN,
+                    index: 0,
+                    relative: false,
+                },
+                delay: 0,
+                side_set: None,
+            };
+            pio_write_instr(
+                &self.pio,
+                9,
+                instr.encode(pio::SideSet::new(false, 0, false)),
+            );
+        }
 
+        self.rx_sm.exec_instruction(Instruction {
+            operands: pio::InstructionOperands::JMP {
+                condition: pio::JmpCondition::Always,
+                address: 9,
+            },
+            delay: 0,
+            side_set: None,
+        });
         self.rx_sm.exec_instruction(Instruction {
             operands: pio::InstructionOperands::MOV {
                 destination: pio::MovDestination::OSR,
@@ -305,9 +343,10 @@ pub fn do_pio_experiment(pins: Pins, pio: PIO0, mut timer: Timer<impl TimerDevic
     let mut resets = unsafe { Peripherals::steal().RESETS };
     let mut usb_pio = UsbPio::new(pio, usb_host_data_plus, usb_host_data_minus, &mut resets);
 
-    usb_pio.prime_rx();
-    let packet = [0x80, 0xff, 0xfe];
-    usb_pio.tx_packet(&packet);
+    usb_pio.tx_token(PID_SETUP, 0, 0);
+    let setup = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00];
+    usb_pio.tx_data(PID_DATA0, &setup);
+    usb_pio.prepare_rx();
 
     let mut a = [0u32; 16];
     let mut i = 0;
@@ -323,6 +362,7 @@ pub fn do_pio_experiment(pins: Pins, pio: PIO0, mut timer: Timer<impl TimerDevic
         console!("data: {d:x}");
     }
     console!("end of data, interrupts = {:x}", usb_pio.pio.get_irq_raw());
+    console!("tx_sm instr = {}", usb_pio.tx_sm.instruction_address());
     unsafe {
         pio_sm_stop(&usb_pio.rx_sm);
     }

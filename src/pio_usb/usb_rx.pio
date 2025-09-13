@@ -8,7 +8,7 @@
 .define public IRQ_RX_EOP 1
 
 start:
-    wait 1 pin 0 [5]
+    //wait 1 pin 0 [5]
 pin_went_low:
     in null, 1
 pin_went_low_1:
