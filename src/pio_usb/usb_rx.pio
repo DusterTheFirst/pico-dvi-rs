@@ -44,4 +44,6 @@ pin_still_high:
     jmp y-- went_high_2
 
 eop:
+.wrap_target
     irq wait IRQ_RX_EOP
+.wrap
