@@ -65,10 +65,15 @@ core::arch::global_asm! {
     options(raw)
 }
 
+#[link_section = ".data"]
+static IMGDATA: [u8; 156548] = *include_bytes!("../imgdata");
+
 extern "C" {
     fn video_scan(scan_list: *const u32, input: *const u32, output: *mut u32) -> *const u32;
 
     fn render_engine(render_list: *const u32, output: *mut u32, y: u32);
+
+    fn image_decompress(src: *const u32, pal: *const u32, out: *mut u32, count: u32);
 }
 
 pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
@@ -117,6 +122,15 @@ impl ScanRender {
     #[inline(never)]
     pub fn render_scanline(&mut self, video_buf: &mut [u32], y: u32) {
         unsafe {
+            let pal = IMGDATA.as_ptr().add(4);
+            let img_line = IMGDATA.as_ptr().add(1028 + y as usize * 324);
+            image_decompress(
+                img_line as *const u32,
+                pal as *const u32,
+                video_buf.as_mut_ptr(),
+                319,
+            );
+            /*
             if y <= self.last_y {
                 DISPLAY_LIST_SWAPCELL.try_swap_by_system(&mut self.display_list);
 
@@ -146,6 +160,7 @@ impl ScanRender {
             self.scan_next = video_scan(self.scan_ptr, line_buf_ptr, video_buf.as_mut_ptr());
             self.stripe_remaining -= 1;
             self.last_y = y;
+            */
         }
     }
 }
