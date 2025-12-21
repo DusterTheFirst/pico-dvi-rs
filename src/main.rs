@@ -25,7 +25,6 @@ use crate::{
     clock::init_clocks,
     dvi::{
         pinout::{DviPinout, DviPolarity},
-        timing::VGA_TIMING,
         DviInst, DviOut,
     },
 };
@@ -90,6 +89,8 @@ const PALETTE: &[u32; 16] = &[
 #[link_section = ".data"]
 pub static PALETTE_4BPP: Palette4bppFast = Palette4bppFast::new(PALETTE);
 
+const POWMAN_PASSWORD_BITS: u32 = 0x5afe0000u32;
+
 fn entry() -> ! {
     info!("Program start");
 
@@ -101,7 +102,7 @@ fn entry() -> ! {
     defmt::info!("If we have not panicked by now, memory regions probably work well");
 
     {
-        const HEAP_SIZE: usize = 128 * 1024;
+        const HEAP_SIZE: usize = 10 * 1024;
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
         unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
     }
@@ -114,7 +115,18 @@ fn entry() -> ! {
     let mut watchdog = Watchdog::new(peripherals.WATCHDOG);
     let single_cycle_io = Sio::new(peripherals.SIO);
 
-    let timing = VGA_TIMING;
+    // Increase the voltage (for overclocking)
+    let powman = peripherals.POWMAN;
+    unsafe {
+        powman
+            .vreg_ctrl()
+            .modify(|r, w| w.bits(r.bits() | POWMAN_PASSWORD_BITS).unlock().set_bit());
+        powman
+            .vreg()
+            .modify(|r, w| w.bits(r.bits() | POWMAN_PASSWORD_BITS).vsel().bits(0xf));
+    }
+    while powman.vreg_sts().read().vout_ok().bit_is_clear() {}
+    let timing = crate::dvi::timing::TIMING_1280x720_RB2;
 
     // External high-speed crystal on the pico board is 12Mhz
     let _clocks = init_clocks(

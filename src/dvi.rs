@@ -99,7 +99,7 @@ impl DviOut {
         }
     }
 
-    pub fn get_line(&self) -> (u32, LineGuard) {
+    pub fn get_line(&self) -> (u32, LineGuard<'_>) {
         let line_ix = self.line_queue.take_blocking();
         let buf_ix = line_ix as usize % N_VIDEO_BUFFERS;
         let guard = LineGuard {
@@ -154,20 +154,20 @@ pub unsafe fn setup_hstx(hstx: &HSTX_CTRL, pinout: DviPinout) {
     unsafe {
         match BPP {
             16 => {
-                // configure for rgb 555
+                // configure for rgb 565
                 hstx.expand_tmds().write(|w| {
                     w.l0_nbits()
                         .bits(4)
                         .l0_rot()
                         .bits(29)
                         .l1_nbits()
-                        .bits(4)
+                        .bits(5)
                         .l1_rot()
-                        .bits(2)
+                        .bits(3)
                         .l2_nbits()
                         .bits(4)
                         .l2_rot()
-                        .bits(7)
+                        .bits(8)
                 });
                 hstx.expand_shift().write(|w| {
                     w.enc_n_shifts()

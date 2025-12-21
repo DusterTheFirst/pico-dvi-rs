@@ -492,3 +492,21 @@ sprite_4bpp:
     ldrhne r3, [r6, r3]
     strhne r3, [r2, #14]
     bx lr
+
+.global image_decompress
+.type image_decompress,%function
+.thumb_func
+image_decompress:
+    push {r4, r5}
+    ldmia r0!, {r4}
+2:
+    ldrb r5, [r0], #1
+    stmia r2!, {r4}
+    ldr r5, [r1, r5, lsl #2]
+    pkhtb r4, r4, r4, asr #16
+    subs r3, #1
+    add r4, r5
+    bhi 2b
+    stmia r2!, {r4}
+    pop {r4, r5}
+    bx lr
