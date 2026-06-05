@@ -284,6 +284,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
         });
     }
 
+    #[link_section = ".data"]
     fn prepare_rx(&mut self) {
         unsafe {
             pio_write_instr(
@@ -320,22 +321,25 @@ pub fn do_pio_experiment(pins: Pins, pio: PIO0, mut timer: Timer<impl TimerDevic
     let mut resets = unsafe { Peripherals::steal().RESETS };
     let mut usb_pio = UsbPio::new(pio, usb_host_data_plus, usb_host_data_minus, &mut resets);
 
-    // Increasing loop count helps visualize signal with scope
+    timer.delay_ms(12);
     for _ in 0..1 {
-        timer.delay_ms(3);
+        //usb_pio.enable_inputs(false);
+        timer.delay_ms(1);
         usb_pio.bus_reset(true);
         timer.delay_ms(3);
         usb_pio.bus_reset(false);
-        timer.delay_ms(1);
-
-        usb_pio.tx_with_crc5(PID_SOF, 1);
-        usb_pio.tx_token(PID_SETUP, 0, 0);
-        let setup = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00];
-        usb_pio.tx_data(PID_DATA0, &setup);
+        timer.delay_us(1000);
+        //usb_pio.enable_inputs(true);
     }
+    usb_pio.tx_with_crc5(PID_SOF, 1);
+    usb_pio.tx_token(PID_SETUP, 0, 0);
+    let setup = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00];
+    usb_pio.tx_data(PID_DATA0, &setup);
     usb_pio.prepare_rx();
-    timer.delay_us(100);
 
+    // So apparently the memclr running in xip is a long enough delay,
+    // but we do this anyway.
+    timer.delay_us(2);
     let mut a = [0u32; 16];
     let mut i = 0;
     while i < a.len() {
