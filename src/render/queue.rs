@@ -37,6 +37,7 @@ impl<const SIZE: usize> Queue<SIZE> {
     /// The waiting is implemented with the `wfe` instruction, which depends
     /// on an event being signaled. This should be reliable when the queue is
     /// pushed from an interrupt handler on the same core.
+    #[allow(unused)]
     pub fn peek_blocking(&self) -> u32 {
         let rd_ix = self.rd_ix.load(Ordering::Relaxed);
         while rd_ix == self.wr_ix.load(Ordering::Acquire) {
@@ -49,6 +50,7 @@ impl<const SIZE: usize> Queue<SIZE> {
     ///
     /// Only valid if the queue is not empty, otherwise unexpected
     /// results can occur.
+    #[allow(unused)]
     pub fn remove(&self) {
         let rd_ix = self.rd_ix.load(Ordering::Relaxed);
         let next = (rd_ix + 1) % SIZE as u32;
@@ -67,6 +69,7 @@ impl<const SIZE: usize> Queue<SIZE> {
         item
     }
 
+    #[allow(unused)]
     pub fn len(&self) -> usize {
         let rd_ix = self.rd_ix.load(Ordering::Acquire);
         let wr_ix = self.wr_ix.load(Ordering::Relaxed);

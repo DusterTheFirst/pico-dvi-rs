@@ -108,7 +108,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
         dp.set_input_override(rp235x_hal::gpio::InputOverride::Invert);
         dm.set_input_override(rp235x_hal::gpio::InputOverride::Invert);
         let (mut pio, sm0, sm1, _, _) = pio.split(resets);
-        let usb_tx_program = pio_proc::pio_file!("src/pio_usb/usb_tx.pio");
+        let usb_tx_program = pio::pio_file!("src/pio_usb/usb_tx.pio");
         let tx_installed = pio.install(&usb_tx_program.program).unwrap();
         let (tx_sm, _, tx) = rp235x_hal::pio::PIOBuilder::from_installed_program(tx_installed)
             .set_pins(dp.id().num, 2)
@@ -120,7 +120,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             .autopull(true)
             .buffers(Buffers::OnlyTx)
             .build(sm0);
-        let rx_program = pio_proc::pio_file!("src/pio_usb/usb_rx.pio");
+        let rx_program = pio::pio_file!("src/pio_usb/usb_rx.pio");
         let eop_irq = rx_program.public_defines.IRQ_RX_EOP;
         let rx_installed = pio.install(&rx_program.program).unwrap();
         let (rx_sm, rx, _) = rp235x_hal::pio::PIOBuilder::from_installed_program(rx_installed)

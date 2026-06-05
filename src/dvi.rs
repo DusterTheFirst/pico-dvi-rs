@@ -12,8 +12,6 @@ use core::{
         Ordering::{Acquire, Relaxed, Release},
     },
 };
-use embedded_hal::digital::StatefulOutputPin;
-use rp235x_hal::gpio::{bank0::Gpio10, FunctionSio, Pin, PullDown, SioOutput};
 
 #[cfg(feature = "audio")]
 use crate::dvi::{data_island::DataPacket, timing::SYNC_DATA_ISLAND_LEN};
@@ -75,8 +73,11 @@ pub struct DviInst {
 
     #[cfg(feature = "audio")]
     data_island_sync: [u32; SYNC_DATA_ISLAND_LEN],
+    #[cfg(feature = "audio")]
     audio_buf: [[i16; 2]; 4],
+    #[cfg(feature = "audio")]
     audio_ix: usize,
+    #[cfg(feature = "audio")]
     frame_count: i32,
 
     missed: [bool; N_VIDEO_BUFFERS],
@@ -98,7 +99,7 @@ impl DviOut {
         }
     }
 
-    pub fn get_line(&self) -> (u32, LineGuard) {
+    pub fn get_line(&self) -> (u32, LineGuard<'_>) {
         let line_ix = self.line_queue.take_blocking();
         let buf_ix = line_ix as usize % N_VIDEO_BUFFERS;
         let guard = LineGuard {
@@ -271,8 +272,8 @@ pub unsafe fn start_dma(dma: &DMA) {
 
 const FUNCTION_HSTX: u8 = 0;
 
-// This doesn't use the hal's `Pins` abstraction because the HAL is missing
-// `FunctionHstx`.
+// When first written, rp235x_hal didn't have FunctionHstx, so this could
+// be redone. But this works, and the loop is arguably nicer.
 pub unsafe fn setup_pins(pads: &PADS_BANK0, io: &IO_BANK0) {
     for pin in 12..20 {
         // TODO: should we be using hardware set/clear/xor?
@@ -327,8 +328,11 @@ impl DviInst {
             #[cfg(feature = "audio")]
             data_island_sync,
             err_line,
+            #[cfg(feature = "audio")]
             audio_buf: Default::default(),
+            #[cfg(feature = "audio")]
             audio_ix: 0,
+            #[cfg(feature = "audio")]
             frame_count: 0,
             missed: [false; N_VIDEO_BUFFERS],
         }

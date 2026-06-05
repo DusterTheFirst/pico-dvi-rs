@@ -132,6 +132,7 @@ impl ScanRender {
             }
             // we could just stack allocate the tmp, as we're currently
             // completely synchronous.
+            #[allow(static_mut_refs)]
             let line_buf_ptr = LINE_BUF.buf.as_mut_ptr();
             let render_ptr = self.render_ptr.add(2);
             render_engine(render_ptr, line_buf_ptr, self.render_y);
