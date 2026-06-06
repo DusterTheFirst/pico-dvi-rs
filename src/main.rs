@@ -78,7 +78,7 @@ static DVI_INST: DviInstWrapper = DviInstWrapper(UnsafeCell::new(MaybeUninit::un
 
 static DVI_OUT: DviOut = DviOut::new();
 
-static mut CORE1_STACK: Stack<1024> = Stack::new();
+static CORE1_STACK: Stack<1024> = Stack::new();
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
 #[hal::entry]
@@ -107,10 +107,7 @@ fn entry() -> ! {
     {
         const HEAP_SIZE: usize = 128 * 1024;
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
-        #[allow(static_mut_refs)]
-        unsafe {
-            HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE)
-        }
+        unsafe { HEAP.init(&raw mut HEAP_MEM as usize, HEAP_SIZE) }
     }
 
     let mut peripherals = hal::pac::Peripherals::take().unwrap();
@@ -184,9 +181,8 @@ fn entry() -> ! {
     let mut mc = Multicore::new(&mut peripherals.PSM, &mut peripherals.PPB, &mut fifo);
     let cores = mc.cores();
     let core1 = &mut cores[1];
-    #[allow(static_mut_refs)]
     core1
-        .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || core1_main())
+        .spawn(CORE1_STACK.take().unwrap(), move || core1_main())
         .unwrap();
 
     demo::demo(led_pin);
