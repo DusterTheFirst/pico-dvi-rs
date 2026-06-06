@@ -4,9 +4,12 @@
 .define J 1
 .define K 2
 
+.define public IRQ_TX_EOP 0
+
     jmp x-- bit_zero
     jmp x-- bit_one
-    set pins, SE0 [7]
+    set pins, SE0
+    irq IRQ_TX_EOP [6]
     set pins, J [3]
 .wrap_target
     set pindirs, 0
@@ -18,7 +21,10 @@ nostuff:
     out pc, 1
 bit_one:
     jmp y-- nostuff [1]
-    jmp bit_zero [1]
+//  jmp bit_zero [1]
+
+// Last instruction is left off, juggled between tx and rx
+
 // tx is primed by exec to save instructions
 
 //start:
