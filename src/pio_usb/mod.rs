@@ -1,26 +1,36 @@
 mod crc;
 
-use embedded_hal::delay::DelayNs;
-use pio::Instruction;
-use rp235x_hal::{
+use core::{cell::UnsafeCell, mem::MaybeUninit};
+
+use cortex_m::peripheral::NVIC;
+use embedded_hal::digital::StatefulOutputPin;
+use hal::{
     gpio::{
-        bank0::{Gpio1, Gpio2},
-        FunctionNull, Pin, PinState, Pins, PullDown, ValidFunction,
+        bank0::{Gpio1, Gpio2, Gpio21},
+        FunctionNull, FunctionSio, Pin, PinState, Pins, PullDown, SioOutput, ValidFunction,
     },
-    pac::{Peripherals, PIO0, RESETS},
+    pac::{interrupt, Peripherals, PIO0, RESETS},
     pio::{Buffers, PIOExt, Rx, StateMachine, Stopped, Tx, ValidStateMachine, SM0, SM1},
-    timer::TimerDevice,
+    timer::{Alarm, CopyableTimer0},
     Timer,
 };
+use pio::Instruction;
+use rp235x_hal::{self as hal};
 
 use crate::pio_usb::crc::{calc_usb_crc5, update_crc_16};
 
-// Very low level PIO functions
+struct UsbPioWrapper<P: PIOExt>(UnsafeCell<MaybeUninit<UsbPio<P>>>);
+
+unsafe impl<P: PIOExt> Sync for UsbPioWrapper<P> {}
+
+static USB_PIO: UsbPioWrapper<PIO0> = UsbPioWrapper(UnsafeCell::new(MaybeUninit::uninit()));
 
 const SYNC: u8 = 0x80;
 const PID_DATA0: u8 = 0xc3;
 const PID_SOF: u8 = 0xa5;
 const PID_SETUP: u8 = 0x2d;
+
+// Very low level PIO functions
 
 #[inline]
 #[link_section = ".data"]
@@ -88,6 +98,9 @@ struct UsbPio<PIO: PIOExt> {
     dp: Pin<Gpio1, PIO::PinFunction, PullDown>,
     #[allow(unused)]
     dm: Pin<Gpio2, PIO::PinFunction, PullDown>,
+    debug: Pin<Gpio21, FunctionSio<SioOutput>, PullDown>,
+    alarm: hal::timer::Alarm0<hal::timer::CopyableTimer0>,
+    state: u32,
 }
 
 impl<PIO: PIOExt> UsbPio<PIO> {
@@ -96,6 +109,8 @@ impl<PIO: PIOExt> UsbPio<PIO> {
         pio: PIO,
         dp: Pin<Gpio1, FunctionNull, PullDown>,
         dm: Pin<Gpio2, FunctionNull, PullDown>,
+        debug: Pin<Gpio21, FunctionSio<SioOutput>, PullDown>,
+        alarm: hal::timer::Alarm0<hal::timer::CopyableTimer0>,
         resets: &mut RESETS,
     ) -> Self
     where
@@ -142,6 +157,9 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             eop_irq,
             dp,
             dm,
+            debug,
+            alarm,
+            state: 0,
         }
     }
 
@@ -313,51 +331,78 @@ impl<PIO: PIOExt> UsbPio<PIO> {
 }
 
 #[link_section = ".data"]
-pub fn do_pio_experiment(pins: Pins, pio: PIO0, mut timer: Timer<impl TimerDevice>) {
+pub fn do_pio_experiment(pins: Pins, pio: PIO0, mut timer: Timer<CopyableTimer0>) {
     let _led = pins.gpio29.into_push_pull_output_in_state(PinState::Low);
     let _usb_host_5v_power = pins.gpio11.into_push_pull_output_in_state(PinState::High);
     let usb_host_data_plus = pins.gpio1;
     let usb_host_data_minus = pins.gpio2;
+    let usb_debug = pins.gpio21.into_push_pull_output_in_state(PinState::Low);
     let mut resets = unsafe { Peripherals::steal().RESETS };
-    let mut usb_pio = UsbPio::new(pio, usb_host_data_plus, usb_host_data_minus, &mut resets);
+    let mut alarm = timer.alarm_0().unwrap();
+    _ = alarm.schedule(fugit::MicrosDurationU32::millis(12));
+    alarm.enable_interrupt();
+    let usb_pio = UsbPio::new(
+        pio,
+        usb_host_data_plus,
+        usb_host_data_minus,
+        usb_debug,
+        alarm,
+        &mut resets,
+    );
 
-    timer.delay_ms(12);
-    for _ in 0..1 {
-        //usb_pio.enable_inputs(false);
-        timer.delay_ms(1);
-        usb_pio.bus_reset(true);
-        timer.delay_ms(3);
-        usb_pio.bus_reset(false);
-        timer.delay_us(1000);
-        //usb_pio.enable_inputs(true);
-    }
-    usb_pio.tx_with_crc5(PID_SOF, 1);
-    usb_pio.tx_token(PID_SETUP, 0, 0);
-    let setup = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00];
-    usb_pio.tx_data(PID_DATA0, &setup);
-    usb_pio.prepare_rx();
-
-    // So apparently the memclr running in xip is a long enough delay,
-    // but we do this anyway.
-    timer.delay_us(2);
-    let mut a = [0u32; 16];
-    let mut i = 0;
-    while i < a.len() {
-        if let Some(d) = usb_pio.rx.read() {
-            a[i] = d >> 24;
-            i += 1;
-        } else {
-            break;
-        }
-    }
-    for d in &a[..i] {
-        console!("data: {d:x}");
-    }
-    console!("end of data, interrupts = {:x}", usb_pio.pio.get_irq_raw());
-    console!("tx_sm instr = {}", usb_pio.tx_sm.instruction_address());
-    console!("rx_sm instr = {}", usb_pio.rx_sm.instruction_address());
     unsafe {
-        pio_sm_stop(&usb_pio.rx_sm);
+        (*USB_PIO.0.get()).write(usb_pio);
+        NVIC::unmask(crate::hal::pac::Interrupt::TIMER0_IRQ_0);
     }
-    usb_pio.pio.clear_irq(1 << usb_pio.eop_irq);
+}
+
+#[link_section = ".data"]
+#[interrupt]
+fn TIMER0_IRQ_0() {
+    let usb_pio = unsafe { (*USB_PIO.0.get()).assume_init_mut() };
+    usb_pio.alarm.clear_interrupt();
+    match usb_pio.state {
+        0 => {
+            usb_pio.bus_reset(true);
+            _ = usb_pio.alarm.schedule(fugit::MicrosDurationU32::millis(3));
+        }
+        1 => {
+            usb_pio.bus_reset(false);
+            _ = usb_pio.alarm.schedule(fugit::MicrosDurationU32::millis(1));
+        }
+        2 => {
+            usb_pio.debug.toggle();
+            usb_pio.tx_with_crc5(PID_SOF, 1);
+            usb_pio.tx_token(PID_SETUP, 0, 0);
+            let setup = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00];
+            usb_pio.tx_data(PID_DATA0, &setup);
+            usb_pio.prepare_rx();
+            _ = usb_pio.alarm.schedule(fugit::MicrosDurationU32::micros(2));
+        }
+        3 => {
+            usb_pio.debug.toggle();
+            let mut a = [0u32; 16];
+            let mut i = 0;
+            while i < a.len() {
+                if let Some(d) = usb_pio.rx.read() {
+                    a[i] = d >> 24;
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            for d in &a[..i] {
+                console!("data: {d:x}");
+            }
+            console!("end of data, interrupts = {:x}", usb_pio.pio.get_irq_raw());
+            console!("tx_sm instr = {}", usb_pio.tx_sm.instruction_address());
+            console!("rx_sm instr = {}", usb_pio.rx_sm.instruction_address());
+            unsafe {
+                pio_sm_stop(&usb_pio.rx_sm);
+            }
+            usb_pio.pio.clear_irq(1 << usb_pio.eop_irq);
+        }
+        _ => (),
+    }
+    usb_pio.state += 1;
 }
