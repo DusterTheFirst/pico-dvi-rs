@@ -1,4 +1,5 @@
 mod crc;
+mod wire;
 
 use core::{cell::UnsafeCell, mem::MaybeUninit};
 
@@ -17,7 +18,10 @@ use hal::{
 use pio::Instruction;
 use rp235x_hal::{self as hal};
 
-use crate::pio_usb::crc::{calc_usb_crc5, update_crc_16};
+use crate::pio_usb::{
+    crc::{calc_usb_crc5, update_crc_16},
+    wire::{DEVICE_TO_HOST, GET_DESCRIPTOR, HOST_TO_DEVICE, SET_ADDRESS, SET_CONFIGURATION},
+};
 
 struct UsbPioWrapper<P: PIOExt>(UnsafeCell<MaybeUninit<UsbPio<P>>>);
 
@@ -28,6 +32,7 @@ static USB_PIO: UsbPioWrapper<PIO0> = UsbPioWrapper(UnsafeCell::new(MaybeUninit:
 const SYNC: u8 = 0x80;
 const PID_ACK: u8 = 0xd2;
 const PID_DATA0: u8 = 0xc3;
+const PID_DATA1: u8 = 0x4b;
 const PID_IN: u8 = 0x69;
 const PID_SOF: u8 = 0xa5;
 const PID_SETUP: u8 = 0x2d;
@@ -390,7 +395,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             0 => {
                 self.bus_reset(true);
                 console!("start bus reset {}", fast_get_timer());
-                _ = self.alarm.schedule(fugit::MicrosDurationU32::millis(3));
+                _ = self.alarm.schedule(fugit::MicrosDurationU32::millis(12));
             }
             1 => {
                 self.bus_reset(false);
@@ -406,7 +411,16 @@ impl<PIO: PIOExt> UsbPio<PIO> {
                 self.tx_token(PID_SETUP, 0, 0);
             }
             4 => {
-                let setup = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00];
+                let setup = [
+                    DEVICE_TO_HOST,
+                    GET_DESCRIPTOR,
+                    0x00,
+                    0x01,
+                    0x00,
+                    0x00,
+                    0x12,
+                    0x00,
+                ];
                 self.tx_data(PID_DATA0, &setup);
                 self.state_minor = 2;
             }
@@ -426,6 +440,30 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             }
             7 => {
                 self.debug.toggle();
+                self.tx_token(PID_SETUP, 0, 0);
+            }
+            8 => {
+                let set_addr = [HOST_TO_DEVICE, SET_ADDRESS, 1, 0, 0, 0, 0, 0];
+                self.tx_data(PID_DATA0, &set_addr);
+                self.state_minor = 2;
+            }
+            9 => {
+                // got ack from set_address
+                self.tx_token(PID_IN, 0, 0);
+                self.state_minor = 2;
+            }
+            10 => {
+                self.tx_handshake(PID_ACK);
+            }
+            11 => {
+                self.tx_token(PID_SETUP, 1, 0);
+            }
+            12 => {
+                let set_config = [HOST_TO_DEVICE, SET_CONFIGURATION, 1, 0, 0, 0, 0, 0];
+                self.tx_data(PID_DATA0, &set_config);
+                self.state_minor = 2;
+            }
+            13 => {
                 console!("buf ix = {}, crc={:4x}", self.buf_ix, !self.crc);
                 for i in 0..self.buf_ix {
                     console!("data: {:x}", self.buf[i]);
