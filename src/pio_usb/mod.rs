@@ -127,6 +127,17 @@ const TX_IDLE_ADDRESS: u32 = 5;
 const MAX_BUF: usize = 1028;
 const BUF_DURATION_US: u32 = 4;
 
+/// First line of dispatch for interrupts
+#[derive(Clone, Copy, PartialEq)]
+enum StateMinor {
+    TimerWait,
+    Tx,
+    /// Transmitting but immediately switch to Rx when packet is sent.
+    TxListen,
+    Rx,
+    Nop,
+}
+
 struct UsbPio<PIO: PIOExt> {
     tx_sm: StateMachine<(PIO, SM0), Stopped>,
     tx: Tx<(PIO, SM0)>,
@@ -140,7 +151,7 @@ struct UsbPio<PIO: PIOExt> {
     debug: Pin<Gpio21, FunctionSio<SioOutput>, PullDown>,
     alarm: hal::timer::Alarm0<CopyableTimer0>,
     state: u32,
-    state_minor: u32,
+    state_minor: StateMinor,
     buf: [u8; MAX_BUF],
     buf_ix: usize,
     crc: u16,
@@ -201,7 +212,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             debug,
             alarm,
             state: 0,
-            state_minor: 0,
+            state_minor: StateMinor::TimerWait,
             buf: [0u8; MAX_BUF],
             buf_ix: 0,
             crc: 0,
@@ -241,7 +252,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
         unsafe {
             pio_sm_start(&self.tx_sm);
         }
-        self.state_minor = 1;
+        self.state_minor = StateMinor::Tx;
     }
 
     #[link_section = ".data"]
@@ -297,7 +308,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
     #[link_section = ".data"]
     fn finish_tx(&mut self) {
         while !self.tx.write(0xff) {}
-        self.state_minor = 1;
+        self.state_minor = StateMinor::Tx;
     }
 
     /// Transmit a packet.
@@ -396,11 +407,13 @@ impl<PIO: PIOExt> UsbPio<PIO> {
                 self.bus_reset(true);
                 console!("start bus reset {}", fast_get_timer());
                 _ = self.alarm.schedule(fugit::MicrosDurationU32::millis(12));
+                self.state_minor = StateMinor::TimerWait;
             }
             1 => {
                 self.bus_reset(false);
                 console!("stop bus reset {}", fast_get_timer());
                 _ = self.alarm.schedule(fugit::MicrosDurationU32::millis(1));
+                self.state_minor = StateMinor::TimerWait;
             }
             2 => {
                 self.debug.toggle();
@@ -422,13 +435,13 @@ impl<PIO: PIOExt> UsbPio<PIO> {
                     0x00,
                 ];
                 self.tx_data(PID_DATA0, &setup);
-                self.state_minor = 2;
+                self.state_minor = StateMinor::TxListen;
             }
             5 => {
                 // result of handshake is in buf (should be 80 d2)
                 self.debug.toggle();
                 self.tx_token(PID_IN, 0, 0);
-                self.state_minor = 2;
+                self.state_minor = StateMinor::TxListen;
             }
             6 => {
                 let ok = self.crc_ok();
@@ -445,12 +458,12 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             8 => {
                 let set_addr = [HOST_TO_DEVICE, SET_ADDRESS, 1, 0, 0, 0, 0, 0];
                 self.tx_data(PID_DATA0, &set_addr);
-                self.state_minor = 2;
+                self.state_minor = StateMinor::TxListen;
             }
             9 => {
                 // got ack from set_address
                 self.tx_token(PID_IN, 0, 0);
-                self.state_minor = 2;
+                self.state_minor = StateMinor::TxListen;
             }
             10 => {
                 self.tx_handshake(PID_ACK);
@@ -461,7 +474,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             12 => {
                 let set_config = [HOST_TO_DEVICE, SET_CONFIGURATION, 1, 0, 0, 0, 0, 0];
                 self.tx_data(PID_DATA0, &set_config);
-                self.state_minor = 2;
+                self.state_minor = StateMinor::TxListen;
             }
             13 => {
                 console!("buf ix = {}, crc={:4x}", self.buf_ix, !self.crc);
@@ -510,7 +523,7 @@ fn TIMER0_IRQ_0() {
     let usb_pio = unsafe { (*USB_PIO.0.get()).assume_init_mut() };
     usb_pio.alarm.clear_interrupt();
     match usb_pio.state_minor {
-        3 => {
+        StateMinor::Rx => {
             // receiving a packet
             let mut ix = usb_pio.buf_ix;
             while let Some(data) = usb_pio.rx.read() {
@@ -528,9 +541,11 @@ fn TIMER0_IRQ_0() {
                 fast_alarm_schedule(fast_get_timer().wrapping_add(BUF_DURATION_US));
             }
         }
-        _ => {
+        StateMinor::TimerWait => {
             usb_pio.run_major();
         }
+        // TODO: stream tx
+        _ => (),
     }
 }
 
@@ -539,14 +554,14 @@ fn TIMER0_IRQ_0() {
 fn PIO0_IRQ_0() {
     let usb_pio = unsafe { (*USB_PIO.0.get()).assume_init_mut() };
     match usb_pio.state_minor {
-        1 => {
+        StateMinor::Tx => {
             usb_pio.debug.toggle();
             while usb_pio.tx_sm.instruction_address() != TX_IDLE_ADDRESS {}
             usb_pio.pio.clear_irq(1);
-            usb_pio.state_minor = 0;
+            usb_pio.state_minor = StateMinor::Nop;
             usb_pio.run_major();
         }
-        2 => {
+        StateMinor::TxListen => {
             // sent packet, waiting for rx
             while usb_pio.tx_sm.instruction_address() != TX_IDLE_ADDRESS {}
             usb_pio.prepare_rx();
@@ -555,9 +570,9 @@ fn PIO0_IRQ_0() {
             unsafe {
                 fast_alarm_schedule(fast_get_timer().wrapping_add(BUF_DURATION_US));
             }
-            usb_pio.state_minor = 3;
+            usb_pio.state_minor = StateMinor::Rx;
         }
-        3 => {
+        StateMinor::Rx => {
             // got packet
             usb_pio.debug.toggle();
             unsafe {
@@ -576,7 +591,7 @@ fn PIO0_IRQ_0() {
                 ix += 1;
             }
             usb_pio.buf_ix = ix;
-            usb_pio.state_minor = 0;
+            usb_pio.state_minor = StateMinor::Nop;
             usb_pio.run_major();
         }
         _ => (),
