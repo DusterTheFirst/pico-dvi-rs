@@ -125,7 +125,7 @@ unsafe fn fast_alarm_disarm() {
 const TX_IDLE_ADDRESS: u32 = 5;
 
 const MAX_BUF: usize = 1028;
-const BUF_DURATION_US: u32 = 4;
+const BUF_DURATION_US: u32 = 2;
 
 /// First line of dispatch for interrupts
 #[derive(Clone, Copy, PartialEq)]
@@ -155,6 +155,9 @@ struct UsbPio<PIO: PIOExt> {
     buf: [u8; MAX_BUF],
     buf_ix: usize,
     crc: u16,
+    frame_number: u32,
+    /// Timestamp (in us) of last SOF packet
+    sof_timestamp: u32,
 }
 
 impl<PIO: PIOExt> UsbPio<PIO> {
@@ -216,6 +219,8 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             buf: [0u8; MAX_BUF],
             buf_ix: 0,
             crc: 0,
+            frame_number: 0,
+            sof_timestamp: 0,
         }
     }
 
@@ -401,6 +406,17 @@ impl<PIO: PIOExt> UsbPio<PIO> {
     }
 
     #[link_section = ".data"]
+    fn wait_next_sof(&mut self) {
+        self.sof_timestamp = self.sof_timestamp.wrapping_add(1000);
+        self.frame_number = self.frame_number.wrapping_add(1);
+        unsafe {
+            fast_alarm_schedule(self.sof_timestamp);
+        }
+        self.state = 12;
+        self.state_minor = StateMinor::TimerWait;
+    }
+
+    #[link_section = ".data"]
     fn run_major(&mut self) {
         match self.state {
             0 => {
@@ -417,7 +433,9 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             }
             2 => {
                 self.debug.toggle();
-                self.tx_with_crc5(PID_SOF, 1);
+                self.tx_with_crc5(PID_SOF, 0);
+                self.sof_timestamp = fast_get_timer();
+                self.frame_number = 1;
             }
             3 => {
                 self.debug.toggle();
@@ -469,14 +487,26 @@ impl<PIO: PIOExt> UsbPio<PIO> {
                 self.tx_handshake(PID_ACK);
             }
             11 => {
-                self.tx_token(PID_SETUP, 1, 0);
+                self.wait_next_sof();
+                return;
             }
             12 => {
+                // SOF handler
+                self.tx_with_crc5(PID_SOF, self.frame_number as u16 & 0x7ff);
+                if self.frame_number != 3 {
+                    self.wait_next_sof();
+                    return;
+                }
+            }
+            13 => {
+                self.tx_token(PID_SETUP, 1, 0);
+            }
+            14 => {
                 let set_config = [HOST_TO_DEVICE, SET_CONFIGURATION, 1, 0, 0, 0, 0, 0];
                 self.tx_data(PID_DATA0, &set_config);
                 self.state_minor = StateMinor::TxListen;
             }
-            13 => {
+            15 => {
                 console!("buf ix = {}, crc={:4x}", self.buf_ix, !self.crc);
                 for i in 0..self.buf_ix {
                     console!("data: {:x}", self.buf[i]);
