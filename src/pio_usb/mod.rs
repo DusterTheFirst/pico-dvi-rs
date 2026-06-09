@@ -16,7 +16,7 @@ use hal::{
     Timer,
 };
 use pio::Instruction;
-use rp235x_hal::{self as hal};
+use rp235x_hal as hal;
 
 use crate::pio_usb::{
     crc::{calc_usb_crc5, update_crc_16},
@@ -32,6 +32,7 @@ static USB_PIO: UsbPioWrapper<PIO0> = UsbPioWrapper(UnsafeCell::new(MaybeUninit:
 const SYNC: u8 = 0x80;
 const PID_ACK: u8 = 0xd2;
 const PID_DATA0: u8 = 0xc3;
+#[expect(unused)]
 const PID_DATA1: u8 = 0x4b;
 const PID_IN: u8 = 0x69;
 const PID_SOF: u8 = 0xa5;
@@ -110,33 +111,9 @@ unsafe fn fast_alarm_schedule(timestamp: u32) {
     }
 }
 
-#[inline]
-#[link_section = ".data"]
-/// Schedules the alarm at timestamp.
-///
-/// Doesn't try to do anything fancy about detecting timestamps in the past.
-unsafe fn fast_alarm_disarm() {
-    let timer_addr = 0x400b0020;
-    unsafe {
-        core::ptr::write_volatile(timer_addr as *mut u32, 1);
-    }
-}
-
-const TX_IDLE_ADDRESS: u32 = 5;
+const TX_IDLE_ADDRESS: u32 = 4;
 
 const MAX_BUF: usize = 1028;
-const BUF_DURATION_US: u32 = 2;
-
-/// First line of dispatch for interrupts
-#[derive(Clone, Copy, PartialEq)]
-enum StateMinor {
-    TimerWait,
-    Tx,
-    /// Transmitting but immediately switch to Rx when packet is sent.
-    TxListen,
-    Rx,
-    Nop,
-}
 
 struct UsbPio<PIO: PIOExt> {
     tx_sm: StateMachine<(PIO, SM0), Stopped>,
@@ -151,13 +128,18 @@ struct UsbPio<PIO: PIOExt> {
     debug: Pin<Gpio21, FunctionSio<SioOutput>, PullDown>,
     alarm: hal::timer::Alarm0<CopyableTimer0>,
     state: u32,
-    state_minor: StateMinor,
     buf: [u8; MAX_BUF],
     buf_ix: usize,
-    crc: u16,
     frame_number: u32,
     /// Timestamp (in us) of last SOF packet
     sof_timestamp: u32,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum RxResult {
+    Ok,
+    CrcMismatch,
+    Timeout,
 }
 
 impl<PIO: PIOExt> UsbPio<PIO> {
@@ -215,10 +197,8 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             debug,
             alarm,
             state: 0,
-            state_minor: StateMinor::TimerWait,
             buf: [0u8; MAX_BUF],
             buf_ix: 0,
-            crc: 0,
             frame_number: 0,
             sof_timestamp: 0,
         }
@@ -230,10 +210,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
         unsafe {
             pio_sm_stop(&self.tx_sm);
             pio_write_instr(
-                &self.pio, 9, 0x0188, // jmp y-- nostuff [1]
-            );
-            pio_write_instr(
-                &self.pio, 10, 0x0106, // jmp bit_zero [1]
+                &self.pio, 9, 0x0105, // jmp bit_zero [1]
             );
             pio_sm_exec(&self.tx_sm, 0xe001); // set pins, LINE_STATE_J
             pio_sm_exec(&self.tx_sm, 0xe083); // set pindirs, 3
@@ -257,7 +234,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
         unsafe {
             pio_sm_start(&self.tx_sm);
         }
-        self.state_minor = StateMinor::Tx;
+        while self.tx_sm.instruction_address() != TX_IDLE_ADDRESS {}
     }
 
     #[link_section = ".data"]
@@ -313,7 +290,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
     #[link_section = ".data"]
     fn finish_tx(&mut self) {
         while !self.tx.write(0xff) {}
-        self.state_minor = StateMinor::Tx;
+        while self.tx_sm.instruction_address() != TX_IDLE_ADDRESS {}
     }
 
     /// Transmit a packet.
@@ -339,6 +316,53 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             }
         }
         self.finish_tx();
+    }
+
+    #[link_section = ".data"]
+    fn rx_packet(&mut self) -> RxResult {
+        self.prepare_rx();
+        let mut last_timestamp = fast_get_timer();
+        const TIMEOUT_DELAY_US: u32 = 3;
+        let mut ix = 0;
+        let mut result = RxResult::Ok;
+        let mut crc = 0xffff;
+        loop {
+            let irq = self.pio.get_irq_raw();
+            let ix_start = ix;
+            while let Some(data) = self.rx.read() {
+                let byte = (data >> 24) as u8;
+                self.buf[ix] = byte;
+                if ix >= 4 {
+                    crc = update_crc_16(crc, self.buf[ix - 2]);
+                }
+                ix += 1;
+            }
+            if irq != 0 {
+                self.buf_ix = ix;
+                break;
+            }
+            let timestamp = fast_get_timer();
+            if ix > ix_start {
+                last_timestamp = timestamp;
+            } else if timestamp.wrapping_sub(last_timestamp) >= TIMEOUT_DELAY_US {
+                result = RxResult::Timeout;
+                break;
+            }
+        }
+        // Note: handshake packets will record as failure...
+        if ix >= 4 {
+            crc = !crc;
+            if self.buf[ix - 2] != crc as u8 || self.buf[ix - 1] != (crc >> 8) as u8 {
+                result = RxResult::CrcMismatch;
+            }
+            //console!("crc fail");
+        }
+        unsafe {
+            pio_sm_stop(&self.rx_sm);
+            pio_sm_restart(&self.rx_sm);
+        }
+        self.pio.clear_irq(2);
+        result
     }
 
     #[link_section = ".data"]
@@ -372,22 +396,11 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             pio_write_instr(
                 &self.pio, 9, 0x25a0, // wait 1 pin 0 [5]
             );
-            pio_write_instr(
-                &self.pio, 10, 0x4061, // in null, 1
-            );
             pio_sm_exec(&self.rx_sm, 0x0009); // jmp start
             pio_sm_exec(&self.rx_sm, 0xa0eb); // mov osr, !null
             pio_sm_start(&self.rx_sm);
         }
         self.buf_ix = 0;
-        self.crc = 0xffff;
-    }
-
-    #[link_section = ".data"]
-    fn crc_ok(&self) -> bool {
-        let crc = !self.crc;
-        let ix = self.buf_ix;
-        ix >= 4 && self.buf[ix - 2] == crc as u8 && self.buf[ix - 1] == (crc >> 8) as u8
     }
 
     /// Set input enable on data pins.
@@ -412,109 +425,7 @@ impl<PIO: PIOExt> UsbPio<PIO> {
         unsafe {
             fast_alarm_schedule(self.sof_timestamp);
         }
-        self.state = 12;
-        self.state_minor = StateMinor::TimerWait;
-    }
-
-    #[link_section = ".data"]
-    fn run_major(&mut self) {
-        match self.state {
-            0 => {
-                self.bus_reset(true);
-                console!("start bus reset {}", fast_get_timer());
-                _ = self.alarm.schedule(fugit::MicrosDurationU32::millis(12));
-                self.state_minor = StateMinor::TimerWait;
-            }
-            1 => {
-                self.bus_reset(false);
-                console!("stop bus reset {}", fast_get_timer());
-                _ = self.alarm.schedule(fugit::MicrosDurationU32::millis(1));
-                self.state_minor = StateMinor::TimerWait;
-            }
-            2 => {
-                self.debug.toggle();
-                self.tx_with_crc5(PID_SOF, 0);
-                self.sof_timestamp = fast_get_timer();
-                self.frame_number = 1;
-            }
-            3 => {
-                self.debug.toggle();
-                self.tx_token(PID_SETUP, 0, 0);
-            }
-            4 => {
-                let setup = [
-                    DEVICE_TO_HOST,
-                    GET_DESCRIPTOR,
-                    0x00,
-                    0x01,
-                    0x00,
-                    0x00,
-                    0x12,
-                    0x00,
-                ];
-                self.tx_data(PID_DATA0, &setup);
-                self.state_minor = StateMinor::TxListen;
-            }
-            5 => {
-                // result of handshake is in buf (should be 80 d2)
-                self.debug.toggle();
-                self.tx_token(PID_IN, 0, 0);
-                self.state_minor = StateMinor::TxListen;
-            }
-            6 => {
-                let ok = self.crc_ok();
-                if ok {
-                    self.tx_handshake(PID_ACK);
-                } else {
-                    console!("crc fail");
-                }
-            }
-            7 => {
-                self.debug.toggle();
-                self.tx_token(PID_SETUP, 0, 0);
-            }
-            8 => {
-                let set_addr = [HOST_TO_DEVICE, SET_ADDRESS, 1, 0, 0, 0, 0, 0];
-                self.tx_data(PID_DATA0, &set_addr);
-                self.state_minor = StateMinor::TxListen;
-            }
-            9 => {
-                // got ack from set_address
-                self.tx_token(PID_IN, 0, 0);
-                self.state_minor = StateMinor::TxListen;
-            }
-            10 => {
-                self.tx_handshake(PID_ACK);
-            }
-            11 => {
-                self.wait_next_sof();
-                return;
-            }
-            12 => {
-                // SOF handler
-                self.tx_with_crc5(PID_SOF, self.frame_number as u16 & 0x7ff);
-                if self.frame_number != 3 {
-                    self.wait_next_sof();
-                    return;
-                }
-            }
-            13 => {
-                self.tx_token(PID_SETUP, 1, 0);
-            }
-            14 => {
-                let set_config = [HOST_TO_DEVICE, SET_CONFIGURATION, 1, 0, 0, 0, 0, 0];
-                self.tx_data(PID_DATA0, &set_config);
-                self.state_minor = StateMinor::TxListen;
-            }
-            15 => {
-                console!("buf ix = {}, crc={:4x}", self.buf_ix, !self.crc);
-                for i in 0..self.buf_ix {
-                    console!("data: {:x}", self.buf[i]);
-                }
-            }
-            _ => (),
-        }
-        self.state += 1;
+        self.state = 2;
     }
 }
 
@@ -539,11 +450,8 @@ pub fn do_pio_experiment(pins: Pins, pio: PIO0, mut timer: Timer<CopyableTimer0>
     );
 
     unsafe {
-        usb_pio.pio.irq0().enable_sm_interrupt(0);
-        usb_pio.pio.irq0().enable_sm_interrupt(1);
         (*USB_PIO.0.get()).write(usb_pio);
         NVIC::unmask(crate::hal::pac::Interrupt::TIMER0_IRQ_0);
-        NVIC::unmask(crate::hal::pac::Interrupt::PIO0_IRQ_0);
     }
 }
 
@@ -552,77 +460,80 @@ pub fn do_pio_experiment(pins: Pins, pio: PIO0, mut timer: Timer<CopyableTimer0>
 fn TIMER0_IRQ_0() {
     let usb_pio = unsafe { (*USB_PIO.0.get()).assume_init_mut() };
     usb_pio.alarm.clear_interrupt();
-    match usb_pio.state_minor {
-        StateMinor::Rx => {
-            // receiving a packet
-            let mut ix = usb_pio.buf_ix;
-            while let Some(data) = usb_pio.rx.read() {
-                let byte = (data >> 24) as u8;
-                usb_pio.buf[ix] = byte;
-                if ix >= 4 {
-                    usb_pio.crc = update_crc_16(usb_pio.crc, usb_pio.buf[ix - 2]);
-                }
-                ix += 1;
-            }
-            // timeout logic; if ix = 0, we didn't get a packet
-            usb_pio.buf_ix = ix;
-            usb_pio.debug.toggle();
-            unsafe {
-                fast_alarm_schedule(fast_get_timer().wrapping_add(BUF_DURATION_US));
-            }
+    match usb_pio.state {
+        0 => {
+            usb_pio.bus_reset(true);
+            console!("start bus reset {}", fast_get_timer());
+            _ = usb_pio.alarm.schedule(fugit::MicrosDurationU32::millis(12));
+            usb_pio.state = 1;
         }
-        StateMinor::TimerWait => {
-            usb_pio.run_major();
+        1 => {
+            usb_pio.bus_reset(false);
+            console!("stop bus reset {}", fast_get_timer());
+            _ = usb_pio.alarm.schedule(fugit::MicrosDurationU32::millis(1));
+            usb_pio.state = 2;
         }
-        // TODO: stream tx
-        _ => (),
-    }
-}
+        2 => {
+            if usb_pio.frame_number == 0 {
+                usb_pio.sof_timestamp = fast_get_timer();
+            }
+            usb_pio.tx_with_crc5(PID_SOF, usb_pio.frame_number as u16 & 0x7ff);
+            match usb_pio.frame_number {
+                0 => {
+                    usb_pio.tx_token(PID_SETUP, 0, 0);
+                    let setup = [
+                        DEVICE_TO_HOST,
+                        GET_DESCRIPTOR,
+                        0x00,
+                        0x01,
+                        0x00,
+                        0x00,
+                        0x12,
+                        0x00,
+                    ];
+                    usb_pio.tx_data(PID_DATA0, &setup);
+                    let _rx_result = usb_pio.rx_packet();
+                    //console!("rx ok = {}", _rx_result == RxResult::Ok);
+                    if _rx_result == RxResult::Ok {
+                        //usb_pio.debug.toggle();
+                        console!("rx ok");
+                    }
 
-#[link_section = ".data"]
-#[interrupt]
-fn PIO0_IRQ_0() {
-    let usb_pio = unsafe { (*USB_PIO.0.get()).assume_init_mut() };
-    match usb_pio.state_minor {
-        StateMinor::Tx => {
-            usb_pio.debug.toggle();
-            while usb_pio.tx_sm.instruction_address() != TX_IDLE_ADDRESS {}
-            usb_pio.pio.clear_irq(1);
-            usb_pio.state_minor = StateMinor::Nop;
-            usb_pio.run_major();
-        }
-        StateMinor::TxListen => {
-            // sent packet, waiting for rx
-            while usb_pio.tx_sm.instruction_address() != TX_IDLE_ADDRESS {}
-            usb_pio.prepare_rx();
-            usb_pio.pio.clear_irq(1);
-            usb_pio.debug.toggle();
-            unsafe {
-                fast_alarm_schedule(fast_get_timer().wrapping_add(BUF_DURATION_US));
-            }
-            usb_pio.state_minor = StateMinor::Rx;
-        }
-        StateMinor::Rx => {
-            // got packet
-            usb_pio.debug.toggle();
-            unsafe {
-                pio_sm_stop(&usb_pio.rx_sm);
-                pio_sm_restart(&usb_pio.rx_sm);
-                fast_alarm_disarm();
-            }
-            usb_pio.pio.clear_irq(2);
-            let mut ix = usb_pio.buf_ix;
-            while let Some(data) = usb_pio.rx.read() {
-                let byte = (data >> 24) as u8;
-                usb_pio.buf[ix] = byte;
-                if ix >= 4 {
-                    usb_pio.crc = update_crc_16(usb_pio.crc, usb_pio.buf[ix - 2]);
+                    usb_pio.tx_token(PID_IN, 0, 0);
+                    let rx_result = usb_pio.rx_packet();
+                    if rx_result == RxResult::Ok {
+                        usb_pio.tx_handshake(PID_ACK);
+                    }
+                    usb_pio.tx_token(PID_SETUP, 0, 0);
+                    let set_addr = [HOST_TO_DEVICE, SET_ADDRESS, 1, 0, 0, 0, 0, 0];
+                    usb_pio.tx_data(PID_DATA0, &set_addr);
+                    let _rx_result = usb_pio.rx_packet();
+                    usb_pio.tx_token(PID_IN, 0, 0);
+                    usb_pio.debug.toggle();
+                    let rx_result = usb_pio.rx_packet();
+                    if rx_result == RxResult::Ok {
+                        usb_pio.tx_handshake(PID_ACK);
+                        //usb_pio.debug.toggle();
+                        console!("buf_ix = {}", usb_pio.buf_ix);
+                        for i in 0..usb_pio.buf_ix {
+                            console!("data: {:02x}", usb_pio.buf[i]);
+                        }
+                    } else {
+                        //usb_pio.debug.toggle();
+                        console!("rx fail");
+                    }
                 }
-                ix += 1;
+                3 => {
+                    usb_pio.debug.toggle();
+                    usb_pio.tx_token(PID_SETUP, 1, 0);
+                    let set_config = [HOST_TO_DEVICE, SET_CONFIGURATION, 1, 0, 0, 0, 0, 0];
+                    usb_pio.tx_data(PID_DATA0, &set_config);
+                    let rx_result = usb_pio.rx_packet();
+                    console!("rx ok = {}", rx_result == RxResult::Ok);
+                }
+                _ => (),
             }
-            usb_pio.buf_ix = ix;
-            usb_pio.state_minor = StateMinor::Nop;
-            usb_pio.run_major();
+            usb_pio.wait_next_sof();
         }
         _ => (),
     }
