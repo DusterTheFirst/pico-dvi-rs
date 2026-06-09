@@ -32,9 +32,10 @@ static USB_PIO: UsbPioWrapper<PIO0> = UsbPioWrapper(UnsafeCell::new(MaybeUninit:
 const SYNC: u8 = 0x80;
 const PID_ACK: u8 = 0xd2;
 const PID_DATA0: u8 = 0xc3;
-#[expect(unused)]
 const PID_DATA1: u8 = 0x4b;
 const PID_IN: u8 = 0x69;
+const PID_NAK: u8 = 0x5a;
+const PID_OUT: u8 = 0xe1;
 const PID_SOF: u8 = 0xa5;
 const PID_SETUP: u8 = 0x2d;
 
@@ -135,7 +136,7 @@ struct UsbPio<PIO: PIOExt> {
     sof_timestamp: u32,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum RxResult {
     Ok,
     CrcMismatch,
@@ -495,7 +496,6 @@ fn TIMER0_IRQ_0() {
                     let _rx_result = usb_pio.rx_packet();
                     //console!("rx ok = {}", _rx_result == RxResult::Ok);
                     if _rx_result == RxResult::Ok {
-                        //usb_pio.debug.toggle();
                         console!("rx ok");
                     }
 
@@ -503,35 +503,112 @@ fn TIMER0_IRQ_0() {
                     let rx_result = usb_pio.rx_packet();
                     if rx_result == RxResult::Ok {
                         usb_pio.tx_handshake(PID_ACK);
+                        usb_pio.tx_token(PID_OUT, 0, 0);
+                        usb_pio.tx_data(PID_DATA1, &[]);
+                        let rx_result = usb_pio.rx_packet();
+                        if rx_result != RxResult::Ok {
+                            console!("rx fail from get_descriptor data1 ack");
+                        }
                     }
                     usb_pio.tx_token(PID_SETUP, 0, 0);
                     let set_addr = [HOST_TO_DEVICE, SET_ADDRESS, 1, 0, 0, 0, 0, 0];
                     usb_pio.tx_data(PID_DATA0, &set_addr);
                     let _rx_result = usb_pio.rx_packet();
                     usb_pio.tx_token(PID_IN, 0, 0);
-                    usb_pio.debug.toggle();
+                    //usb_pio.debug.toggle();
                     let rx_result = usb_pio.rx_packet();
                     if rx_result == RxResult::Ok {
                         usb_pio.tx_handshake(PID_ACK);
-                        //usb_pio.debug.toggle();
-                        console!("buf_ix = {}", usb_pio.buf_ix);
+                    }
+                }
+                3 => {
+                    usb_pio.tx_token(PID_SETUP, 1, 0);
+                    let set_config = [HOST_TO_DEVICE, SET_CONFIGURATION, 1, 0, 0, 0, 0, 0];
+                    usb_pio.tx_data(PID_DATA0, &set_config);
+                    let _rx_result = usb_pio.rx_packet();
+                    usb_pio.tx_token(PID_IN, 1, 0);
+                    let rx_result = usb_pio.rx_packet();
+                    if rx_result == RxResult::Ok {
+                        usb_pio.tx_handshake(PID_ACK);
+                    }
+
+                    //console!("rx ok = {}", rx_result == RxResult::Ok);
+                    for port in 1..=4 {
+                        usb_pio.tx_token(PID_SETUP, 1, 0);
+                        let pwrup = [0x23, 0x03, 0x08, 0x00, port, 0x00, 0x00, 0x00];
+                        usb_pio.tx_data(PID_DATA0, &pwrup);
+                        let _rx_result = usb_pio.rx_packet();
+                        usb_pio.tx_token(PID_IN, 1, 0);
+                        let rx_result = usb_pio.rx_packet();
+                        if rx_result == RxResult::Ok {
+                            usb_pio.tx_handshake(PID_ACK);
+                        }
+                    }
+
+                    usb_pio.tx_token(PID_SETUP, 1, 0);
+                    let clear = [0x20, 1, 1, 0, 0, 0, 0, 0];
+                    usb_pio.tx_data(PID_DATA0, &clear);
+                    let _rx_result = usb_pio.rx_packet();
+                    usb_pio.tx_token(PID_IN, 1, 0);
+                    let rx_result = usb_pio.rx_packet();
+                    if rx_result == RxResult::Ok {
+                        usb_pio.tx_handshake(PID_ACK);
+                    }
+
+                    usb_pio.tx_token(PID_SETUP, 1, 0);
+                    let get_desc = [0xa0, 6, 0, 0x29, 0, 0, 0x9, 0];
+                    usb_pio.tx_data(PID_DATA0, &get_desc);
+                    let rx_result = usb_pio.rx_packet();
+                    if rx_result != RxResult::Ok {
+                        console!("rx fail ack from get_desc setup req");
+                    }
+                    usb_pio.tx_token(PID_IN, 1, 0);
+                    let rx_result = usb_pio.rx_packet();
+                    if rx_result == RxResult::Ok {
+                        usb_pio.tx_handshake(PID_ACK);
+                        usb_pio.tx_token(PID_OUT, 1, 0);
+                        usb_pio.debug.toggle();
+                        // console!("buf_ix = {}", usb_pio.buf_ix);
+                        // for i in 0..usb_pio.buf_ix {
+                        //     console!("data: {:02x}", usb_pio.buf[i]);
+                        // }
+                        usb_pio.tx_data(PID_DATA1, &[]);
+                        let _rx_result = usb_pio.rx_packet();
+                    } else {
+                        console!("rx fail {rx_result:?}");
+                    }
+                }
+                100 => {
+                    usb_pio.tx_token(PID_SETUP, 1, 0);
+                    let get_status = [0xa3, 0, 0, 0, 1, 0, 4, 0];
+                    usb_pio.tx_data(PID_DATA0, &get_status);
+                    let _rx_result = usb_pio.rx_packet();
+                    usb_pio.tx_token(PID_IN, 1, 0);
+                    let rx_result = usb_pio.rx_packet();
+                    if rx_result == RxResult::Ok {
+                        usb_pio.tx_handshake(PID_ACK);
+                        // TODO: send zero length ack
+                        console!("get_status buf_ix = {}", usb_pio.buf_ix);
                         for i in 0..usb_pio.buf_ix {
                             console!("data: {:02x}", usb_pio.buf[i]);
                         }
                     } else {
-                        //usb_pio.debug.toggle();
                         console!("rx fail");
                     }
                 }
-                3 => {
-                    usb_pio.debug.toggle();
-                    usb_pio.tx_token(PID_SETUP, 1, 0);
-                    let set_config = [HOST_TO_DEVICE, SET_CONFIGURATION, 1, 0, 0, 0, 0, 0];
-                    usb_pio.tx_data(PID_DATA0, &set_config);
-                    let rx_result = usb_pio.rx_packet();
-                    console!("rx ok = {}", rx_result == RxResult::Ok);
+                _ => {
+                    if usb_pio.frame_number == 101 {
+                        usb_pio.tx_token(PID_IN, 1, 1);
+                        let rx_result = usb_pio.rx_packet();
+                        if rx_result == RxResult::Ok && usb_pio.buf[1] != PID_NAK {
+                            usb_pio.tx_handshake(PID_ACK);
+                            console!("buf_ix = {}", usb_pio.buf_ix);
+                            for i in 0..usb_pio.buf_ix {
+                                console!("data: {:02x}", usb_pio.buf[i]);
+                            }
+                        }
+                    }
                 }
-                _ => (),
             }
             usb_pio.wait_next_sof();
         }

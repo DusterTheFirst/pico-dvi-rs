@@ -29,7 +29,7 @@ pin_went_high:
 not_stuffed:
     in null, 1
 went_high_1:
-    set y, 5
+    set y, 6
     mov x, pins
     jmp x-- eop [8]
 went_high_2:
