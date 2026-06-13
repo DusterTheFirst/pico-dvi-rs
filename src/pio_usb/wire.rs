@@ -42,6 +42,8 @@ pub const SET_CONFIGURATION: u8 = 9;
 
 // features
 
+pub const PORT_RESET: u16 = 4;
+
 pub const PORT_POWER: u16 = 8;
 
 // descriptor types
