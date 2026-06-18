@@ -10,16 +10,18 @@ use dvi::core1_main;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
 
 use defmt::info;
-use embedded_alloc::Heap;
+use embedded_alloc::LlffHeap as Heap;
 use hal::{
     dma::DMAExt,
     gpio::PinState,
     multicore::{Multicore, Stack},
     sio::Sio,
+    vector_table::VectorTable,
     watchdog::Watchdog,
 };
 use render::{init_display_swapcell, Palette4bppFast};
 use rp235x_hal as hal;
+use static_cell::ConstStaticCell;
 
 use crate::{
     clock::init_clocks,
@@ -42,6 +44,8 @@ mod scanlist;
 /// Ordinarily this is 2 so the system doesn't need to be overclocked, but
 /// can be 1 to provide more CPU horsepower per pixel.
 const HSTX_MULTIPLE: u32 = 2;
+
+static RAM_VTABLE: ConstStaticCell<VectorTable> = ConstStaticCell::new(VectorTable::new());
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
@@ -74,7 +78,7 @@ static DVI_INST: DviInstWrapper = DviInstWrapper(UnsafeCell::new(MaybeUninit::un
 
 static DVI_OUT: DviOut = DviOut::new();
 
-static mut CORE1_STACK: Stack<1024> = Stack::new();
+static CORE1_STACK: Stack<1024> = Stack::new();
 
 // Separate macro annotated function to make rust-analyzer fixes apply better
 #[hal::entry]
@@ -103,7 +107,7 @@ fn entry() -> ! {
     {
         const HEAP_SIZE: usize = 128 * 1024;
         static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
-        unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
+        unsafe { HEAP.init(&raw mut HEAP_MEM as usize, HEAP_SIZE) }
     }
 
     let mut peripherals = hal::pac::Peripherals::take().unwrap();
@@ -113,6 +117,12 @@ fn entry() -> ! {
 
     let mut watchdog = Watchdog::new(peripherals.WATCHDOG);
     let single_cycle_io = Sio::new(peripherals.SIO);
+
+    let ram_vtable = RAM_VTABLE.take();
+    ram_vtable.init(&mut peripherals.PPB);
+    unsafe {
+        ram_vtable.activate(&mut peripherals.PPB);
+    }
 
     let timing = VGA_TIMING;
 
@@ -172,7 +182,7 @@ fn entry() -> ! {
     let cores = mc.cores();
     let core1 = &mut cores[1];
     core1
-        .spawn(unsafe { CORE1_STACK.take().unwrap() }, move || core1_main())
+        .spawn(CORE1_STACK.take().unwrap(), move || core1_main())
         .unwrap();
 
     demo::demo(led_pin);

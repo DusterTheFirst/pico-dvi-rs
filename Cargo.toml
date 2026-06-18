@@ -16,19 +16,20 @@ version = "0.0.0"
 audio = []
 
 [dependencies]
-cortex-m       = "0.7.2"
+cortex-m       = "0.7.7"
 cortex-m-rt    = "0.7"
-embedded-alloc = "0.5"
+embedded-alloc = "0.7"
 embedded-hal   = "1.0.0"
 
 defmt       = "0.3.2"
 defmt-rtt   = "0.4.0"
 panic-probe = { version = "0.3.0", features = ["print-defmt"] }
 
-fugit    = { version = "0.3.6", features = ["defmt"] }
+fugit    = { version = "0.3.7", features = ["defmt"] }
 #pio      = "0.2.1"
 #pio-proc = "0.2.1"
-rp235x-hal = { version = "0.3.0", features = ["binary-info", "critical-section-impl", "rt", "defmt"] }
+rp235x-hal = { version = "0.4.0", features = ["binary-info", "critical-section-impl", "rt", "defmt"] }
+static_cell = "2.1.1"
 
 # TODO: use for bitfield
 # bilge = "0.1.5"

@@ -30,6 +30,7 @@ pub struct DviTiming {
 const SYNC_TRAILING_RAW: usize = 8;
 pub const SYNC_LINE_WORDS: usize = 7 + SYNC_TRAILING_RAW;
 pub const SYNC_LINE_ONLY_WORDS: usize = 3 + SYNC_TRAILING_RAW;
+#[cfg(feature = "audio")]
 pub const SYNC_DATA_ISLAND_LEN: usize = 56;
 
 #[link_section = ".data"]
@@ -90,6 +91,7 @@ impl DviTiming {
         line
     }
 
+    #[cfg(feature = "audio")]
     pub fn init_data_island(&self, line: &mut [u32; SYNC_DATA_ISLAND_LEN]) {
         line[0] = hstx_cmd_raw_repeat(self.h_front_porch - 8);
         line[2] = hstx_cmd_raw_repeat(8);
@@ -99,6 +101,7 @@ impl DviTiming {
         line[45] = hstx_cmd_raw(10);
     }
 
+    #[cfg(feature = "audio")]
     const VIDEO_GUARD: u32 = 0x2cc | (0x133 << 10) | (0x2cc << 20);
     #[cfg(feature = "audio")]
     #[link_section = ".data"]
@@ -216,6 +219,7 @@ impl DviTimingState {
         }
     }
 
+    #[allow(unused)]
     pub fn v_ctr(&self) -> u32 {
         self.v_ctr
     }
