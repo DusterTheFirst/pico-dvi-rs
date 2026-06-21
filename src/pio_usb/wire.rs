@@ -51,3 +51,16 @@ pub const PORT_POWER: u16 = 8;
 pub const DEVICE_DESCRIPTOR: u8 = 1;
 
 pub const HUB_DESCRIPTOR: u8 = 0x29;
+
+pub const fn pid_data(toggle: u8) -> u8 {
+    if toggle == 0 {
+        PID_DATA0
+    } else {
+        PID_DATA1
+    }
+}
+
+/// Given PID_DATA0, return PID_DATA1 and vice versa.
+pub const fn pid_data_toggle(pid: u8) -> u8 {
+    pid ^ (PID_DATA0 ^ PID_DATA1)
+}

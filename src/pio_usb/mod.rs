@@ -1,6 +1,6 @@
 mod crc;
-mod host;
-mod usb_bus;
+mod host_task;
+mod iface;
 mod wire;
 
 use core::{cell::UnsafeCell, mem::MaybeUninit};
@@ -19,16 +19,17 @@ use hal::{
 use pio::Instruction;
 use rp235x_hal as hal;
 
-use crate::pio_usb::{
+use self::{
     crc::{calc_usb_crc5, update_crc_16},
-    host::SetupPacket,
-    usb_bus::UsbBus,
+    iface::{IntIface, Request, Status},
     wire::{
-        CLASS_REQUEST, DEVICE_DESCRIPTOR, DEVICE_TO_HOST, GET_DESCRIPTOR, GET_STATUS,
-        HOST_TO_DEVICE, HUB_DESCRIPTOR, PID_ACK, PID_IN, PID_NAK, PID_SOF, PORT_POWER,
-        RECIPIENT_OTHER, SET_ADDRESS, SET_CONFIGURATION, SET_FEATURE, SYNC,
+        pid_data, CLASS_REQUEST, DEVICE_DESCRIPTOR, DEVICE_TO_HOST, GET_DESCRIPTOR, HOST_TO_DEVICE,
+        HUB_DESCRIPTOR, PID_ACK, PID_DATA0, PID_IN, PID_NAK, PID_OUT, PID_SETUP, PID_SOF,
+        PORT_POWER, RECIPIENT_OTHER, SET_ADDRESS, SET_CONFIGURATION, SET_FEATURE, SYNC,
     },
 };
+
+pub use self::host_task::UsbTask;
 
 struct UsbPioWrapper<P: PIOExt>(UnsafeCell<MaybeUninit<UsbPio<P>>>);
 
@@ -125,6 +126,7 @@ struct UsbPio<PIO: PIOExt> {
     dp: Pin<Gpio1, PIO::PinFunction, PullDown>,
     #[allow(unused)]
     dm: Pin<Gpio2, PIO::PinFunction, PullDown>,
+    #[allow(unused)]
     debug: Pin<Gpio21, FunctionSio<SioOutput>, PullDown>,
     alarm: hal::timer::Alarm0<CopyableTimer0>,
     state: u32,
@@ -133,7 +135,8 @@ struct UsbPio<PIO: PIOExt> {
     frame_number: u32,
     /// Timestamp (in us) of last SOF packet
     sof_timestamp: u32,
-    bus: UsbBus,
+    int_iface: IntIface,
+    held_pipes: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -202,7 +205,8 @@ impl<PIO: PIOExt> UsbPio<PIO> {
             buf_ix: 0,
             frame_number: 0,
             sof_timestamp: 0,
-            bus: UsbBus::default(),
+            int_iface: IntIface::default(),
+            held_pipes: 0,
         }
     }
 
@@ -472,6 +476,83 @@ impl<PIO: PIOExt> UsbPio<PIO> {
         }
         self.state = 2;
     }
+
+    #[link_section = ".data"]
+    fn handle_requests(&mut self) {
+        let mut reqs = self.int_iface.poll() | self.held_pipes;
+        self.held_pipes = 0;
+        while reqs != 0 {
+            let pipe_ix = reqs.trailing_zeros() as usize;
+            reqs &= reqs - 1;
+            unsafe {
+                let mut pipe = self.int_iface.pipe(pipe_ix);
+                match pipe.req {
+                    Request::Setup => {
+                        self.tx_token(PID_SETUP, pipe.addr, pipe.ep);
+                        self.tx_data(PID_DATA0, &pipe.buf[0..8]);
+                        let handshake = self.rx_handshake();
+                        if handshake == Some(PID_ACK) {
+                            pipe.toggle = 1;
+                            pipe.status = Status::Success;
+                        } else {
+                            // TODO: retry, handle other errors
+                            pipe.status = Status::Error;
+                        }
+                    }
+                    Request::In => {
+                        self.tx_token(PID_IN, pipe.addr, pipe.ep);
+                        match self.rx_packet() {
+                            RxResult::Ok => {
+                                let expected_pid = pid_data(pipe.toggle);
+                                if self.buf[1] == expected_pid && self.buf_ix >= 4 {
+                                    self.tx_handshake(PID_ACK);
+                                    let len = self.buf_ix - 4;
+                                    // This copy could be avoided by having rx_packet decode into the
+                                    // provided buf. But that's a bit tricky.
+                                    pipe.buf[0..len].copy_from_slice(&self.buf[2..][..len]);
+                                    pipe.len = len as u16;
+                                    pipe.toggle ^= 1;
+                                    pipe.status = Status::Success;
+                                } else if self.buf[1] == PID_NAK {
+                                    // This retries indefinitely, which is reasonable for interrupt
+                                    // endpoints, but other requests should eventually fail.
+                                    //
+                                    // A bunch of other refinements make sense:
+                                    //   * retry interval other than 1ms
+                                    //   * a cancel mechanism
+                                    self.held_pipes |= 1 << pipe_ix;
+                                    continue;
+                                } else {
+                                    //console!("pid = {:02x}", self.buf[1]);
+                                    // TODO if wrong data pid, then our last ack got lost, send ack
+                                    // again but retry transaction.
+                                    pipe.status = Status::Error;
+                                }
+                            }
+                            _ => {
+                                pipe.status = Status::Error;
+                            }
+                        }
+                    }
+                    Request::Out => {
+                        self.tx_token(PID_OUT, pipe.addr, pipe.ep);
+                        let pid = pid_data(pipe.toggle);
+                        self.tx_data(pid, &pipe.buf[..pipe.len as usize]);
+                        let handshake = self.rx_handshake();
+                        if handshake == Some(PID_ACK) {
+                            pipe.toggle = 1;
+                            pipe.status = Status::Success;
+                        } else {
+                            // TODO: retry, handle other errors
+                            pipe.status = Status::Error;
+                        }
+                    }
+                    _ => (),
+                }
+                self.int_iface.send_response(pipe);
+            }
+        }
+    }
 }
 
 #[link_section = ".data"]
@@ -518,6 +599,15 @@ fn TIMER0_IRQ_0() {
             _ = usb_pio.alarm.schedule(fugit::MicrosDurationU32::millis(1));
             usb_pio.state = 2;
         }
+        2 => {
+            if usb_pio.frame_number == 0 {
+                usb_pio.sof_timestamp = fast_get_timer();
+            }
+            usb_pio.tx_with_crc5(PID_SOF, usb_pio.frame_number as u16 & 0x7ff);
+            usb_pio.handle_requests();
+            usb_pio.wait_next_sof();
+        }
+        /*
         2 => {
             if usb_pio.frame_number == 0 {
                 usb_pio.sof_timestamp = fast_get_timer();
@@ -598,6 +688,7 @@ fn TIMER0_IRQ_0() {
             }
             usb_pio.wait_next_sof();
         }
+        */
         _ => (),
     }
 }

@@ -2,7 +2,9 @@ use core::sync::atomic::{AtomicU32, AtomicU8, Ordering::Relaxed};
 
 use alloc::string::String;
 
-use crate::render::{end_display_list, rgb, start_display_list, BW_PALETTE_1BPP, FONT_HEIGHT};
+use crate::render::{
+    end_display_list, rgb, start_display_list, try_start_display_list, BW_PALETTE_1BPP, FONT_HEIGHT,
+};
 
 const BUFFER_SIZE: usize = 4096;
 static BUFFER: [AtomicU8; BUFFER_SIZE] = [const { AtomicU8::new(0) }; BUFFER_SIZE];
@@ -29,7 +31,7 @@ fn get_byte(ix: usize) -> u8 {
     BUFFER[ix % BUFFER_SIZE].load(Relaxed)
 }
 
-pub fn display_console() -> ! {
+pub fn display_console(mut f: impl FnMut()) -> ! {
     loop {
         let end_ix = BUFFER_IX.load(Relaxed) as usize;
         let mut start_ix = end_ix;
@@ -45,7 +47,14 @@ pub fn display_console() -> ! {
             start_ix -= 1;
         }
         let mut height = 480;
-        let (mut rb, mut sb) = start_display_list();
+        let (mut rb, mut sb) = loop {
+            if let Some(b) = try_start_display_list() {
+                break b;
+            } else {
+                f();
+                // maybe wfe() here?
+            }
+        };
         while start_ix < end_ix {
             let mut line_end = start_ix;
             let mut s = String::new();

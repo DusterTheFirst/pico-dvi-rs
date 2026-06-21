@@ -31,7 +31,7 @@ use crate::{
         timing::VGA_TIMING,
         DviInst, DviOut,
     },
-    pio_usb::do_pio_experiment,
+    pio_usb::{do_pio_experiment, UsbTask},
 };
 
 mod clock;
@@ -210,7 +210,8 @@ fn entry() -> ! {
         let pio = periphs.PIO0;
         do_pio_experiment(pins, pio, timer);
     }
-    console::display_console();
+    let mut usb_task = unsafe { UsbTask::new() };
+    console::display_console(|| usb_task.poll());
 }
 
 fn sysinfo(sysinfo: &hal::pac::SYSINFO) {
