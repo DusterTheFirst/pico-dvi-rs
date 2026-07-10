@@ -50,6 +50,7 @@ pub struct Pipe {
     // consider changing this to PID_DATA0 or PID_DATA1, rather than 0 or 1 as now
     pub toggle: u8,
     pub len: u16,
+    pub timer: u16,
     pub req: Request,
     pub status: Status,
 }
@@ -64,12 +65,14 @@ pub enum Request {
     Setup,
     In,
     Out,
+    Delay,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Status {
     Empty,
     Success,
+    #[expect(unused, reason = "TODO: haven't implemented timeouts yet")]
     Timeout,
     #[expect(
         unused,
@@ -87,6 +90,7 @@ impl Pipe {
             ep: 0,
             toggle: 0,
             len: 0,
+            timer: 0,
             req: Request::Empty,
             status: Status::Empty,
         }
@@ -138,6 +142,10 @@ impl UserIface {
         assert!((self.int_owned >> pipe_ix) & 1 == 0);
         self.int_owned |= 1 << pipe_ix;
         PipeGuard { pipe_ix }
+    }
+
+    pub fn release_pipe(&mut self, pipe: PipeGuard) {
+        self.int_owned &= !(1 << pipe.pipe_ix);
     }
 
     pub fn send_req(&mut self, pipe: PipeGuard) {

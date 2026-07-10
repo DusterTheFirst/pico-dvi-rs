@@ -22,11 +22,7 @@ use rp235x_hal as hal;
 use self::{
     crc::{calc_usb_crc5, update_crc_16},
     iface::{IntIface, Request, Status},
-    wire::{
-        pid_data, CLASS_REQUEST, DEVICE_DESCRIPTOR, DEVICE_TO_HOST, GET_DESCRIPTOR, HOST_TO_DEVICE,
-        HUB_DESCRIPTOR, PID_ACK, PID_DATA0, PID_IN, PID_NAK, PID_OUT, PID_SETUP, PID_SOF,
-        PORT_POWER, RECIPIENT_OTHER, SET_ADDRESS, SET_CONFIGURATION, SET_FEATURE, SYNC,
-    },
+    wire::{pid_data, PID_ACK, PID_DATA0, PID_IN, PID_NAK, PID_OUT, PID_SETUP, PID_SOF, SYNC},
 };
 
 pub use self::host_task::UsbTask;
@@ -545,6 +541,15 @@ impl<PIO: PIOExt> UsbPio<PIO> {
                         } else {
                             // TODO: retry, handle other errors
                             pipe.status = Status::Error;
+                        }
+                    }
+                    Request::Delay => {
+                        pipe.timer -= 1;
+                        if pipe.timer == 0 {
+                            pipe.status = Status::Success;
+                        } else {
+                            self.held_pipes |= 1 << pipe_ix;
+                            continue;
                         }
                     }
                     _ => (),

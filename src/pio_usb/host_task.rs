@@ -1,7 +1,7 @@
 //! A task that is continuously polled to run the USB host role.
 
 use crate::pio_usb::{
-    iface::{Pipe, PipeGuard, Request, Status, UserIface},
+    iface::{PipeGuard, Request, Status, UserIface},
     wire::{
         CLASS_REQUEST, CLEAR_FEATURE, DEVICE_DESCRIPTOR, DEVICE_TO_HOST, GET_DESCRIPTOR,
         GET_STATUS, HOST_TO_DEVICE, HUB_DESCRIPTOR, PORT_POWER, PORT_RESET, RECIPIENT_OTHER,
@@ -20,7 +20,9 @@ const N_PIPES: usize = 16;
 pub struct UsbTask {
     iface: UserIface,
     transfers: [Transfer; N_PIPES],
+    transfers_free: u32,
     hub: HubTask,
+    pipe_tasks: [PipeTask; N_PIPES],
 }
 
 #[derive(Copy, Clone)]
@@ -41,6 +43,7 @@ struct Transfer {
 enum TransferType {
     ControlNone,
     ControlIn,
+    #[expect(unused)]
     ControlOut,
     PollInterrupt,
 }
@@ -50,6 +53,7 @@ enum TransferPhase {
     Setup,
     Data,
     Status,
+    Delay,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -67,8 +71,7 @@ struct HubTask {
     changes: u16,
     pending_resets: u16,
     resetting: u16,
-    // This is a hack that will go away when we stop overloading the interrupt pipe
-    save_toggle: u8,
+    ignore_hub_events: bool,
 }
 
 // states from Figure 9-1 of USB 2.0 spec
@@ -87,9 +90,25 @@ enum HubState {
     PowerPort(u8),
     Polling,
     GotPoll,
+}
+
+struct PipeTask {
+    state: PipeState,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PipeState {
+    Idle,
     GotPortStatus,
     DidClearFeature,
+    DidReset,
     GotReset,
+    AfterResetDelay,
+    GotDesc,
+    Address,
+    AfterAddressDelay,
+    Configured,
+    GotPoll,
 }
 
 impl SetupPacket {
@@ -110,7 +129,7 @@ impl SetupPacket {
 }
 
 impl Transfer {
-    const fn default() -> Self {
+    const fn new() -> Self {
         Self {
             ty: TransferType::ControlNone,
             phase: TransferPhase::Idle,
@@ -163,7 +182,7 @@ impl Transfer {
                     }
                     _ => todo!(),
                 },
-                TransferPhase::Status => {
+                TransferPhase::Status | TransferPhase::Delay => {
                     self.phase = TransferPhase::Idle;
                     //console!("status done");
                     TickResult::Done
@@ -189,6 +208,14 @@ impl Transfer {
             self.target_len = len;
         }
     }
+
+    fn delay(&mut self, delay_ms: u16) {
+        if let Some(pipe) = &mut self.pipe {
+            pipe.timer = delay_ms;
+            pipe.req = Request::Delay;
+            self.phase = TransferPhase::Delay;
+        }
+    }
 }
 
 impl UsbTask {
@@ -203,7 +230,7 @@ impl UsbTask {
             0,
             0x12,
         );
-        let mut transfers = [const { Transfer::default() }; N_PIPES];
+        let mut transfers = [const { Transfer::new() }; N_PIPES];
         transfers[0].ty = TransferType::ControlIn;
         transfers[0].phase = TransferPhase::Setup;
         // TODO: packet size should be derived from device descriptor
@@ -214,13 +241,23 @@ impl UsbTask {
         pipe.setup(setup);
         iface.send_req(pipe);
         let hub = HubTask::default();
+        let pipe_tasks = [const { PipeTask::new() }; N_PIPES];
         Self {
             iface,
             transfers,
+            transfers_free: 1u32.unbounded_shl(N_PIPES as u32).wrapping_sub(2),
             hub,
+            pipe_tasks,
         }
     }
 
+    /// Poll the USB bus, advancing the state machine.
+    ///
+    /// This function should be called periodically. There is currently no waker
+    /// mechanism in place. Generally the timing is fairly relaxed, but excessive
+    /// delays may cause failures (for example, 50ms for set address commands).
+    ///
+    /// It will probably evolve to return a result, basically a stream of events.
     pub fn poll(&mut self) {
         let mut bits = self.iface.poll();
         while bits != 0 {
@@ -228,9 +265,13 @@ impl UsbTask {
             self.transfers[ix].pipe = Some(self.iface.pipe(ix));
             //console!("polled {ix}, status = {:?}", pipe.status);
             let mut res = self.transfers[ix].tick();
-            if res == TickResult::Done && ix == 0 {
-                self.hub_tick();
-                res = TickResult::Send;
+            if res == TickResult::Done {
+                if ix == 0 {
+                    self.hub_tick();
+                    res = TickResult::Send;
+                } else {
+                    res = self.pipe_tick(ix);
+                }
             }
             match res {
                 TickResult::Send => {
@@ -239,6 +280,7 @@ impl UsbTask {
                     }
                 }
                 TickResult::Done => {
+                    self.free_transfer(ix);
                     console!("pipe {ix} done");
                 }
                 _ => (),
@@ -247,16 +289,32 @@ impl UsbTask {
         }
     }
 
+    fn alloc_transfer(&mut self) -> usize {
+        let ix = self.transfers_free.trailing_zeros() as usize;
+        // TODO: handle failure
+        self.transfers[ix].pipe = Some(self.iface.pipe(ix));
+        ix
+    }
+
+    fn free_transfer(&mut self, ix: usize) {
+        if let Some(pipe) = self.transfers[ix].pipe.take() {
+            self.iface.release_pipe(pipe);
+        }
+        self.transfers_free |= 1 << ix;
+    }
+
     fn hub_tick(&mut self) {
         let transfer = &mut self.transfers[0];
         match self.hub.hub_state {
             HubState::Configuring => match self.hub.state {
+                // maybe reduce duplication between this and device setup
                 DeviceState::Default => {
                     let setup = SetupPacket::new(HOST_TO_DEVICE, SET_ADDRESS, 1, 0, 0);
                     transfer.setup(setup);
                     self.hub.state = DeviceState::Address;
                 }
                 DeviceState::Address => {
+                    // TODO: should implement 2ms delay here, per 9.2.6.3
                     let setup = SetupPacket::new(HOST_TO_DEVICE, SET_CONFIGURATION, 1, 0, 0);
                     transfer.pipe.as_mut().unwrap().addr = 1;
                     transfer.setup(setup);
@@ -286,9 +344,10 @@ impl UsbTask {
                     0,
                 );
                 transfer.setup(setup);
+                // TODO: iterate through ports, though probably not necessary for CH334F
                 self.hub.hub_state = HubState::Polling;
             }
-            HubState::Polling | HubState::DidClearFeature => {
+            HubState::Polling => {
                 if let Some(pipe) = &mut transfer.pipe {
                     pipe.ep = 1;
                     pipe.req = Request::In;
@@ -299,30 +358,46 @@ impl UsbTask {
                 self.hub.hub_state = HubState::GotPoll;
             }
             HubState::GotPoll => {
-                let port = transfer.buf[0].trailing_zeros();
-                console!("investigating port {port}");
-                self.hub.port = port as u16;
-                let setup = SetupPacket::new(
-                    DEVICE_TO_HOST | CLASS_REQUEST | RECIPIENT_OTHER,
-                    GET_STATUS,
-                    0,
-                    self.hub.port,
-                    4,
-                );
-                // TODO: alloc new transfer here
-                transfer.setup(setup);
-                self.hub.hub_state = HubState::GotPortStatus;
+                // spawn a task to query port status
+                if !self.hub.ignore_hub_events {
+                    let port = transfer.buf[0].trailing_zeros();
+                    self.hub.port = port as u16;
+                    let new_transfer_ix = self.alloc_transfer();
+                    console!("investigating port {port}, new_transfer_ix = {new_transfer_ix}");
+                    let setup = SetupPacket::new(
+                        DEVICE_TO_HOST | CLASS_REQUEST | RECIPIENT_OTHER,
+                        GET_STATUS,
+                        0,
+                        self.hub.port,
+                        4,
+                    );
+                    self.transfers[new_transfer_ix].setup(setup);
+                    if let Some(mut pipe) = self.transfers[new_transfer_ix].pipe.take() {
+                        pipe.addr = 1;
+                        self.iface.send_req(pipe);
+                    }
+                    self.pipe_tasks[new_transfer_ix].state = PipeState::GotPortStatus;
+                    self.hub.ignore_hub_events = true;
+                }
             }
-            HubState::GotPortStatus => {
+        }
+    }
+
+    fn pipe_tick(&mut self, ix: usize) -> TickResult {
+        let transfer = &mut self.transfers[ix];
+        let task = &mut self.pipe_tasks[ix];
+        match task.state {
+            PipeState::GotPortStatus => {
                 let status = u16::from_le_bytes(transfer.buf[0..2].try_into().unwrap());
                 self.hub.changes = u16::from_le_bytes(transfer.buf[2..4].try_into().unwrap());
-                console!("status {status:04x} changes {:04x}", self.hub.changes);
                 if status & self.hub.changes & 1 != 0 {
                     self.hub.pending_resets |= 1 << self.hub.port;
                 }
-                // TODO: handle changes = 0 (unexpected)
                 let change = self.hub.changes.trailing_zeros();
-                console!("change = {change}");
+                console!(
+                    "status {status:04x} changes {:04x}, change = {change}",
+                    self.hub.changes
+                );
                 let setup = SetupPacket::new(
                     HOST_TO_DEVICE | CLASS_REQUEST | RECIPIENT_OTHER,
                     CLEAR_FEATURE,
@@ -332,164 +407,107 @@ impl UsbTask {
                 );
                 transfer.setup(setup);
                 self.hub.changes &= self.hub.changes - 1;
-                self.hub.hub_state = if change == 4 {
-                    HubState::GotReset
+                task.state = if change == 4 {
+                    PipeState::GotReset
                 } else {
-                    HubState::DidClearFeature
+                    PipeState::DidClearFeature
                 };
             }
-
-            _ => todo!(),
-        }
-    }
-}
-
-impl HubTask {
-    fn tick(&mut self, transfer: &mut Transfer) -> TickResult {
-        let pipe = transfer.pipe.as_mut().unwrap();
-        match self.hub_state {
-            HubState::Configuring => match self.state {
-                DeviceState::Default => {
-                    let setup = SetupPacket::new(HOST_TO_DEVICE, SET_ADDRESS, 1, 0, 0);
-                    pipe.setup(setup);
-                    transfer.phase = TransferPhase::Setup;
-                    transfer.ty = TransferType::ControlNone;
-                    self.state = DeviceState::Address;
-                    TickResult::Send
+            PipeState::DidClearFeature => {
+                console!("did clear feature");
+                // TODO: handle more changes
+                if self.hub.changes == 0 {
+                    self.hub.ignore_hub_events = false;
                 }
-                DeviceState::Address => {
-                    let setup = SetupPacket::new(HOST_TO_DEVICE, SET_CONFIGURATION, 1, 0, 0);
-                    pipe.addr = 1;
-                    pipe.setup(setup);
-                    transfer.phase = TransferPhase::Setup;
-                    transfer.ty = TransferType::ControlNone;
-                    self.state = DeviceState::Configured;
-                    TickResult::Send
-                }
-                DeviceState::Configured => {
-                    let setup = SetupPacket::new(
-                        DEVICE_TO_HOST | CLASS_REQUEST,
-                        GET_DESCRIPTOR,
-                        (HUB_DESCRIPTOR as u16) << 8,
-                        0,
-                        9,
-                    );
-                    pipe.setup(setup);
-                    transfer.phase = TransferPhase::Setup;
-                    transfer.ty = TransferType::ControlIn;
-                    transfer.target_len = 9;
-                    transfer.actual_len = 0;
-                    self.hub_state = HubState::PowerPort(1);
-                    // TODO: probably a good place to add a delay mechanism
-                    TickResult::Send
-                }
-            },
-            HubState::PowerPort(port) => {
-                if port == 1 {
-                    console!("hub desc {:02x?}", &transfer.buf[0..9]);
-                }
-                let setup = SetupPacket::new(
-                    HOST_TO_DEVICE | CLASS_REQUEST | RECIPIENT_OTHER,
-                    SET_FEATURE,
-                    PORT_POWER,
-                    port.into(),
-                    0,
-                );
-                pipe.setup(setup);
-                transfer.phase = TransferPhase::Setup;
-                transfer.ty = TransferType::ControlNone;
-                // TODO: iterate through the ports
-                // (though apparently the CH334F doesn't really need this)
-                self.hub_state = HubState::Polling;
-                TickResult::Send
-            }
-            HubState::Polling => {
-                pipe.ep = 1;
-                pipe.req = Request::In;
-                pipe.toggle = self.save_toggle;
-                transfer.ty = TransferType::PollInterrupt;
-                transfer.phase = TransferPhase::Data;
-                transfer.target_len = 1;
-                transfer.actual_len = 0;
-                self.hub_state = HubState::GotPoll;
-                TickResult::Send
-            }
-            HubState::GotPoll => {
-                self.save_toggle = pipe.toggle;
-                console!("poll result {:02x?}", &transfer.buf[0..1]);
-                // This is a bit hinky; we're reusing the interrupt pipe to do hub work
-                // Probably should just fold this logic into UsbTask
-                let port = transfer.buf[0].trailing_zeros();
-                console!("investigating port {port}");
-                self.port = port as u16;
-                let setup = SetupPacket::new(
-                    DEVICE_TO_HOST | CLASS_REQUEST | RECIPIENT_OTHER,
-                    GET_STATUS,
-                    0,
-                    self.port,
-                    4,
-                );
-                pipe.setup(setup);
-                transfer.phase = TransferPhase::Setup;
-                transfer.ty = TransferType::ControlIn;
-                transfer.target_len = 4;
-                transfer.actual_len = 0;
-                self.hub_state = HubState::GotPortStatus;
-                TickResult::Send
-            }
-            HubState::GotPortStatus => {
-                let status = u16::from_le_bytes(transfer.buf[0..2].try_into().unwrap());
-                self.changes = u16::from_le_bytes(transfer.buf[2..4].try_into().unwrap());
-                console!("status {status:04x} changes {:04x}", self.changes);
-                if status & self.changes & 1 != 0 {
-                    self.pending_resets |= 1 << self.port;
-                }
-                // TODO: handle changes = 0 (unexpected)
-                let change = self.changes.trailing_zeros();
-                console!("change = {change}");
-                let setup = SetupPacket::new(
-                    HOST_TO_DEVICE | CLASS_REQUEST | RECIPIENT_OTHER,
-                    CLEAR_FEATURE,
-                    change as u16 + 16,
-                    self.port,
-                    0,
-                );
-                pipe.setup(setup);
-                transfer.phase = TransferPhase::Setup;
-                transfer.ty = TransferType::ControlNone;
-                self.changes &= self.changes - 1;
-                self.hub_state = if change == 4 {
-                    HubState::GotReset
-                } else {
-                    HubState::DidClearFeature
-                };
-                TickResult::Send
-            }
-            HubState::DidClearFeature => {
-                // TODO: handle additional changes
-                if self.pending_resets != 0 {
-                    self.resetting = self.pending_resets.trailing_zeros() as u16;
+                if self.hub.pending_resets != 0 {
+                    self.hub.resetting = self.hub.pending_resets.trailing_zeros() as u16;
                     let setup = SetupPacket::new(
                         HOST_TO_DEVICE | CLASS_REQUEST | RECIPIENT_OTHER,
                         SET_FEATURE,
                         PORT_RESET,
-                        self.resetting,
+                        self.hub.resetting,
                         0,
                     );
-                    pipe.setup(setup);
-                    transfer.phase = TransferPhase::Setup;
-                    transfer.ty = TransferType::ControlNone;
-                    self.hub_state = HubState::Polling;
-                    self.pending_resets &= self.pending_resets - 1;
-                    TickResult::Send
+                    transfer.setup(setup);
+                    task.state = PipeState::DidReset;
+                    self.hub.pending_resets &= self.hub.pending_resets - 1;
                 } else {
-                    TickResult::Done
+                    return TickResult::Done;
                 }
             }
-            HubState::GotReset => {
-                console!("got reset, resetting {}", self.resetting);
-                TickResult::Done
+            PipeState::DidReset => {
+                console!("did reset");
+                return TickResult::Done;
             }
+            PipeState::GotReset => {
+                console!("got reset");
+                // It's possible we can tighten this; 7.1.7.5 dictates 50ms total, but we've
+                // had some delay from the hub. No harm done though.
+                transfer.delay(50);
+                task.state = PipeState::AfterResetDelay;
+            }
+            PipeState::AfterResetDelay => {
+                console!("got reset delay");
+                // should probably check that port status enabled flag is set
+                // Device has been reset, is now in default state, with address 0 (see Figure 9-1)
+                let setup = SetupPacket::new(
+                    DEVICE_TO_HOST,
+                    GET_DESCRIPTOR,
+                    (DEVICE_DESCRIPTOR as u16) << 8,
+                    0,
+                    0x8,
+                );
+                transfer.packet_size = 8;
+                transfer.setup(setup);
+                if let Some(pipe) = &mut transfer.pipe {
+                    pipe.addr = 0;
+                }
+                task.state = PipeState::GotDesc;
+            }
+            PipeState::GotDesc => {
+                console!("device desc {:02x?}", &transfer.buf[0..8]);
+                transfer.packet_size = transfer.buf[7] as u16;
+                // probably should get full descriptor here, but we cut corners
+                // TODO: allocate address, for now hardcode as 2
+                let setup = SetupPacket::new(HOST_TO_DEVICE, SET_ADDRESS, 2, 0, 0);
+                transfer.setup(setup);
+                task.state = PipeState::Address;
+                // the user task is crashing intermittently here for unknown reasons
+            }
+            PipeState::Address => {
+                console!("address");
+                transfer.delay(100);
+                task.state = PipeState::AfterAddressDelay;
+            }
+            PipeState::AfterAddressDelay => {
+                transfer.pipe.as_mut().unwrap().addr = 2;
+                let setup = SetupPacket::new(HOST_TO_DEVICE, SET_CONFIGURATION, 1, 0, 0);
+                transfer.setup(setup);
+                task.state = PipeState::Configured;
+            }
+            PipeState::Configured => {
+                if let Some(pipe) = &mut transfer.pipe {
+                    pipe.ep = 1;
+                    pipe.req = Request::In;
+                }
+                transfer.ty = TransferType::PollInterrupt;
+                transfer.phase = TransferPhase::Data;
+                transfer.target_len = 8;
+                task.state = PipeState::GotPoll;
+            }
+            PipeState::GotPoll => {
+                console!("report {:02x?}", &transfer.buf[0..8]);
+            }
+            _ => return TickResult::Error, // shouldn't happen
+        }
+        TickResult::Send
+    }
+}
+
+impl PipeTask {
+    const fn new() -> Self {
+        Self {
+            state: PipeState::Idle,
         }
     }
 }
