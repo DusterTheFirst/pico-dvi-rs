@@ -182,6 +182,16 @@ pub fn start_display_list() -> (RenderlistBuilder, ScanlistBuilder) {
     (rb, sb)
 }
 
+pub fn try_start_display_list() -> Option<(RenderlistBuilder, ScanlistBuilder)> {
+    if let Some(display_list) = DISPLAY_LIST_SWAPCELL.try_take() {
+        let rb = RenderlistBuilder::recycle(display_list.render);
+        let sb = ScanlistBuilder::recycle(display_list.scan);
+        Some((rb, sb))
+    } else {
+        None
+    }
+}
+
 pub fn end_display_list(rb: RenderlistBuilder, sb: ScanlistBuilder) {
     let render = rb.build();
     let scan = sb.build();

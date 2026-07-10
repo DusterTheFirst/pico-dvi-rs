@@ -52,12 +52,22 @@ impl<T> SwapCell<T> {
     ///
     /// Block until the value is ready.
     pub fn take_blocking(&self) -> T {
-        while self.state.load(Ordering::Acquire) != STATE_READY_FOR_CLIENT {
+        loop {
+            if let Some(val) = self.try_take() {
+                return val;
+            }
             wfe();
         }
-        let val = unsafe { self.value.get().read().assume_init() };
-        self.state.store(STATE_TAKEN, Ordering::Relaxed);
-        val
+    }
+
+    pub fn try_take(&self) -> Option<T> {
+        if self.state.load(Ordering::Acquire) == STATE_READY_FOR_CLIENT {
+            let val = unsafe { self.value.get().read().assume_init() };
+            self.state.store(STATE_TAKEN, Ordering::Relaxed);
+            Some(val)
+        } else {
+            None
+        }
     }
 
     /// Swap the value if it's ready for the system.

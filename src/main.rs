@@ -5,6 +5,7 @@ extern crate alloc;
 
 use core::{arch::global_asm, cell::UnsafeCell, mem::MaybeUninit};
 
+use cortex_m::peripheral::syst::SystClkSource;
 use defmt_rtt as _;
 use dvi::core1_main;
 use panic_probe as _; // TODO: remove if you need 5kb of space, since panicking + formatting machinery is huge
@@ -13,11 +14,11 @@ use defmt::info;
 use embedded_alloc::LlffHeap as Heap;
 use hal::{
     dma::DMAExt,
-    gpio::PinState,
     multicore::{Multicore, Stack},
     sio::Sio,
     vector_table::VectorTable,
     watchdog::Watchdog,
+    Timer,
 };
 use render::{init_display_swapcell, Palette4bppFast};
 use rp235x_hal as hal;
@@ -30,12 +31,16 @@ use crate::{
         timing::VGA_TIMING,
         DviInst, DviOut,
     },
+    pio_usb::{do_pio_experiment, UsbTask},
 };
 
 mod clock;
+#[macro_use]
+mod console;
 mod demo;
 mod dvi;
 mod link;
+mod pio_usb;
 mod render;
 mod scanlist;
 
@@ -127,7 +132,7 @@ fn entry() -> ! {
     let timing = VGA_TIMING;
 
     // External high-speed crystal on the pico board is 12Mhz
-    let _clocks = init_clocks(
+    let clocks = init_clocks(
         peripherals.XOSC,
         peripherals.ROSC,
         peripherals.CLOCKS,
@@ -135,7 +140,8 @@ fn entry() -> ! {
         peripherals.PLL_USB,
         &mut peripherals.RESETS,
         &mut watchdog,
-        timing.bit_clk / HSTX_MULTIPLE,
+        //timing.bit_clk / HSTX_MULTIPLE,
+        fugit::KilohertzU32::kHz(132000),
         2 / HSTX_MULTIPLE,
     );
 
@@ -146,16 +152,18 @@ fn entry() -> ! {
         &mut peripherals.RESETS,
     );
 
+    /*
     // LED is pin 7 on Feather 2350 board. We don't have board crates yet for Pico 2
     let led_pin = pins.gpio7.into_push_pull_output_in_state(PinState::Low);
     let gpio_pin = pins.gpio10.into_push_pull_output_in_state(PinState::Low);
+    */
 
     let _dma = peripherals.DMA.split(&mut peripherals.RESETS);
 
     let width = timing.h_active_pixels;
 
     unsafe {
-        (*DVI_INST.0.get()).write(DviInst::new(timing, gpio_pin));
+        (*DVI_INST.0.get()).write(DviInst::new(timing));
         // Maybe do more safety theater here. The problem is that pins can't
         // set the HSTX function.
         let periphs = hal::pac::Peripherals::steal();
@@ -163,9 +171,11 @@ fn entry() -> ! {
         while periphs.RESETS.reset_done().read().hstx().bit_is_clear() {}
         use dvi::pinout::DviPair::*;
         // Pinout for Adafruit Feather RP2350
-        let pinout = DviPinout::new([D2, Clk, D1, D0], DviPolarity::Pos);
+        // let pinout = DviPinout::new([D2, Clk, D1, D0], DviPolarity::Pos);
         // Pinout for Olimex RP2350pc
         //let pinout = DviPinout::new([D0, Clk, D2, D1], DviPolarity::Pos);
+        // Pinout for Adafruit Fruit Jam
+        let pinout = crate::DviPinout::new([Clk, D0, D1, D2], crate::DviPolarity::Neg);
         dvi::setup_hstx(&periphs.HSTX_CTRL, pinout);
         dvi::setup_dma(&periphs.DMA, &periphs.HSTX_FIFO);
         periphs
@@ -185,7 +195,23 @@ fn entry() -> ! {
         .spawn(CORE1_STACK.take().unwrap(), move || core1_main())
         .unwrap();
 
-    demo::demo(led_pin);
+    let timer = Timer::new_timer0(peripherals.TIMER0, &mut peripherals.RESETS, &clocks);
+    let ticks = timer.get_counter();
+    console!("hello pico-dvi-rs {ticks}");
+    let ticks = timer.get_counter();
+    console!("hello pico-dvi-rs {ticks}");
+    {
+        // TODO: we can be much more careful about this
+        let periphs = unsafe { hal::pac::Peripherals::steal() };
+        let mut syst = unsafe { cortex_m::Peripherals::steal().SYST };
+        syst.set_clock_source(SystClkSource::Core);
+        syst.set_reload(0xffffff);
+        syst.enable_counter();
+        let pio = periphs.PIO0;
+        do_pio_experiment(pins, pio, timer);
+    }
+    let mut usb_task = unsafe { UsbTask::new() };
+    console::display_console(|| usb_task.poll());
 }
 
 fn sysinfo(sysinfo: &hal::pac::SYSINFO) {
