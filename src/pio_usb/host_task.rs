@@ -262,7 +262,11 @@ impl UsbTask {
         let mut bits = self.iface.poll();
         while bits != 0 {
             let ix = bits.trailing_zeros() as usize;
-            self.transfers[ix].pipe = Some(self.iface.pipe(ix));
+            let pipe = self.iface.pipe(ix);
+            if pipe.status != Status::Success {
+                console!("pipe {ix} status {:?}", pipe.status);
+            }
+            self.transfers[ix].pipe = Some(pipe);
             //console!("polled {ix}, status = {:?}", pipe.status);
             let mut res = self.transfers[ix].tick();
             if res == TickResult::Done {

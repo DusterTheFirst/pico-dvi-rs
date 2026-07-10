@@ -491,8 +491,9 @@ impl<PIO: PIOExt> UsbPio<PIO> {
                             pipe.toggle = 1;
                             pipe.status = Status::Success;
                         } else {
-                            // TODO: retry, handle other errors
-                            pipe.status = Status::Error;
+                            // TODO: this always retries, we should have a retry count.
+                            self.held_pipes |= 1 << pipe_ix;
+                            continue;
                         }
                     }
                     Request::In => {
