@@ -7,6 +7,7 @@ pub const PID_DATA1: u8 = 0x4b;
 pub const PID_IN: u8 = 0x69;
 pub const PID_NAK: u8 = 0x5a;
 pub const PID_OUT: u8 = 0xe1;
+pub const PID_PRE: u8 = 0x3c;
 pub const PID_SOF: u8 = 0xa5;
 pub const PID_SETUP: u8 = 0x2d;
 

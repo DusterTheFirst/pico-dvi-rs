@@ -72,6 +72,7 @@ struct HubTask {
     pending_resets: u16,
     resetting: u16,
     ignore_hub_events: bool,
+    low_speed: bool,
 }
 
 // states from Figure 9-1 of USB 2.0 spec
@@ -411,6 +412,7 @@ impl UsbTask {
                 );
                 transfer.setup(setup);
                 self.hub.changes &= self.hub.changes - 1;
+                self.hub.low_speed = status & 2 != 0;
                 task.state = if change == 4 {
                     PipeState::GotReset
                 } else {
@@ -465,6 +467,7 @@ impl UsbTask {
                 transfer.setup(setup);
                 if let Some(pipe) = &mut transfer.pipe {
                     pipe.addr = 0;
+                    pipe.low_speed = self.hub.low_speed;
                 }
                 task.state = PipeState::GotDesc;
             }

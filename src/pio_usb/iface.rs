@@ -53,6 +53,7 @@ pub struct Pipe {
     pub timer: u16,
     pub req: Request,
     pub status: Status,
+    pub low_speed: bool,
 }
 
 pub struct PipeGuard {
@@ -93,6 +94,7 @@ impl Pipe {
             timer: 0,
             req: Request::Empty,
             status: Status::Empty,
+            low_speed: false,
         }
     }
 
